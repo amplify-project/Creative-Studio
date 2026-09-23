@@ -1,10 +1,10 @@
-# AMPLIFY Portable
+# AMPLIFY Creative Studio
 
 **A web tool for making music together at a distance** — synchronous sessions
 where a host directs what everyone sees and hears, participants record together
 over a shared reference, and the result is mixed server-side into a single take.
 
-AMPLIFY PORTABLE is a user-friendly digital tool designed to unite people across
+AMPLIFY Creative Studio is a user-friendly digital tool designed to unite people across
 distances for learning, performing, and creating together. Ideal for community
 settings, it combines AI-driven audio-visual production with phygital
 engagement, making collaborative experiences seamless and accessible.
@@ -67,7 +67,7 @@ room as ordinary — if hidden — participants. The full reasoning is in
 
 ```bash
 git clone <this repository>
-cd portable_amp
+cd Creative-Studio
 
 cp .env.example server/.env        # fill in NODE_IP and generate the secrets
 ./scripts/fetch-models.sh          # 97 MB of third-party ONNX weights, not in git
@@ -170,11 +170,15 @@ them. Do not substitute your own export of the third-party pair — see
 [`server/agents/assistantHost/audioAnalysis/README.md`](server/agents/assistantHost/audioAnalysis/README.md)
 for why that silently degrades the classifiers.
 
+
 ## License
 
 BSD 2-Clause. See [`LICENSE`](LICENSE).
 
-Copyright (c) 2026, Iñigo Tamayo, Vicomtech, AMPLIFY Project.
+## Contributions
+
+- Will Wedgwood (Salsa sound) : Speech/Music/Distorsion agent.
+- Patricia De Torres (Vicomtech) : Attention agent.
 
 ## Funding
 
