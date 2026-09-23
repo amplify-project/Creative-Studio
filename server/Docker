@@ -1,0 +1,6 @@
+docker run --rm \
+    -e INGRESS_CONFIG_BODY="`cat config.yaml`" \
+    -p 1935:1935 \
+    -p 8080:8080 \
+    --network host \
+    livekit/ingress

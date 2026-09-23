@@ -1,0 +1,60 @@
+# NOTE: "./server/.env" never matched anything — a leading "./" is not a valid
+# gitignore pattern. The .env files are tracked anyway, so ignoring them here
+# would have no effect: gitignore does not apply to files already in the index.
+server/.env
+package-lock.json
+/server/agents/.venv
+/server/agents/dataCollection/__pycache__
+**/__pycache__/
+*.pyc
+
+# Node / Next build output. These were untracked but NOT ignored, so a stray
+# `git add -A` staged them; unstaging left the blobs behind as unreachable
+# objects (280 MB of them by 2026-07-17).
+/node_modules
+/.next
+/out
+tsconfig.tsbuildinfo
+next-env.d.ts
+
+# Local MongoDB data directory (docker volume), not source.
+/server/data1
+/server/agents/speechAnalysis/data
+
+# Environment files: never commit a filled-in copy — use .env.example.
+.env
+.env.*
+!.env.example
+
+# TLS material and LiveKit keys are per deployment, not source.
+certs/
+server/nginx/certs/
+server/livekit.key
+server/livekit.crt
+
+# Session data written by the agents at runtime, not source.
+server/agents/dataCollection/data/
+
+# Local audio/test material. These used to live only in `.git/info/exclude`,
+# which is per-clone and does NOT travel: a fresh clone or a new remote would
+# have picked them up on the next `git add -A`. Some carry a real participant's
+# name in the filename, and one is a copyrighted rip.
+*.wav
+*.ogg
+*.webm
+*.aup
+/tests/
+/reference_data/
+/test.py
+
+# The agent guidance file is local working material, not a deliverable. It was
+# only in `.git/info/exclude`, which does not survive a new clone or remote.
+CLAUDE.md
+
+# Third-party ONNX weights, 97 MB, fetched by scripts/fetch-models.sh. They are
+# YAMNet (Google, Apache-2.0) and the Descript Audio Codec encoder (MIT); they
+# are not ours to redistribute inside a BSD-2 source tree, and dac_encoder.onnx
+# alone is over GitHub's 50 MB warning. The two in-house MLPs next to them stay
+# tracked: nothing public can reproduce those.
+/server/agents/assistantHost/audioAnalysis/yamnet_model.onnx
+/server/agents/assistantHost/audioAnalysis/dac_encoder.onnx

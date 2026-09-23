@@ -1,0 +1,52 @@
+{
+  "name": "portable_amp_livekit",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "startdevssl": "export USE_HTTPS=true && node server.js",
+    "startdev": "cp server/.env.local .env.local && export NEXT_DEBUG_HMR=1 export USE_HTTPS=false  && node server.js",
+    "dev": "next dev",
+    "build": "prisma generate --schema app/dbbackend/model/schema.prisma && next build",
+    "prisma:sync": "prisma db push --schema app/dbbackend/model/schema.prisma --accept-data-loss",
+    "start": "prisma db push --schema app/dbbackend/model/schema.prisma --accept-data-loss --skip-generate && next start -H localhost",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@auth/prisma-adapter": "^2.11.1",
+    "@livekit/components-react": "^2.9.12",
+    "@livekit/components-styles": "^1.1.6",
+    "@prisma/client": "^6.18.0",
+    "cookies-next": "^6.1.1",
+    "date-fns": "^4.1.0",
+    "dotenv": "^17.2.2",
+    "dotenv-expand": "^12.0.3",
+    "jose": "^6.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "livekit-server-sdk": "^2.13.1",
+    "lucide-react": "^0.552.0",
+    "mongodb": "^6.20.0",
+    "next": "^15.5.9",
+    "next-auth": "^4.24.7",
+    "node-fetch": "^3.3.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-icons": "^5.5.0",
+    "react-rnd": "^10.5.2",
+    "three": "latest"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "autoprefixer": "^10",
+    "cross-env": "^10.0.0",
+    "eslint": "^9",
+    "eslint-config-next": "15.3.4",
+    "prisma": "^6.18.0",
+    "qrcode.react": "^4.2.0",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

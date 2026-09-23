@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  gst-whip:
+    image: livekit/gstreamer:1.22.8-prod-rs
+    container_name: gst-whip
+    network_mode: "host"
+    devices:
+      - "/dev/video0:/dev/video0"  
+      - "/dev/video10:/dev/video10" 
+      - "/dev/snd:/dev/snd"
+    environment:
+      - "DISPLAY:99"         
+      -  PULSE_SERVER=unix:/run/user/17656/pulse/native
+    volumes:
+      - "/tmp/.X11-unix:/tmp/.X11-unix"
+      - "/run/user/17656/pulse/native:/run/user/17656/pulse/native"
+      - "/tmp/pulse-socket:/tmp/pulse-socket"
+      - "./:/tmp"
+
+    stdin_open: true
+    tty: true
+    privileged: true
+
+

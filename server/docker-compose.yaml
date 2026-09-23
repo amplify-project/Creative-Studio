@@ -1,0 +1,174 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    network_mode: host
+
+  livekit:
+    image: livekit/livekit-server
+    command: --config /config/livekit.yaml --node-ip=${NODE_IP:-127.0.0.1}
+    volumes:
+      - ./server.yaml:/config/livekit.yaml
+    depends_on:
+      - redis
+    network_mode: host
+
+  nginx:
+    image: nginx:stable
+    volumes:
+      - ./nginx/templates/nginx.conf.template:/etc/nginx/templates/nginx.conf.template:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf  
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - /var/www/html:/usr/share/nginx/html:ro
+      - ./certbot/www:/var/www/certbot   # <-- para ACME challenge
+      - ./certbot/certs:/etc/letsencrypt # <-- certificados para nginx
+
+    healthcheck:
+      test: ["CMD", "ls"]
+      interval: 15s
+      timeout: 3s
+      retries: 2  
+    environment:
+      NODE_IP: ${NODE_IP}  # definir en .env o export
+    entrypoint: ["/bin/sh", "-c","apt-get update && apt-get install -y wget \ && wget -O /usr/local/bin/gomplate https://github.com/hairyhenderson/gomplate/releases/download/v4.3.3/gomplate_linux-amd64 \    && chmod +x /usr/local/bin/gomplate && gomplate -f /etc/nginx/templates/nginx.conf.template -o /etc/nginx/nginx.conf && exec nginx -g 'daemon off;'"]
+    depends_on:
+      - livekit
+    network_mode: host
+
+  livekit-ingress:
+    image: livekit/ingress
+    command: /ingress --config /config.yaml
+    volumes:
+      - ./ingress/config.yaml:/config.yaml:ro
+    environment:
+      INGRESS_CONFIG_BODY: |
+        log_level: debug
+        api_key: ${LIVEKIT_API_KEY}
+        api_secret: ${LIVEKIT_API_SECRET}
+        ws_url: ws://localhost:7880
+        redis:
+          address: localhost:6379
+          password: ${REDIS_PASSWORD}
+    depends_on:
+      - livekit
+      - redis
+    network_mode: host
+
+  agent_zoom:
+    build:
+      context: ./agents
+    image: agent_zoom:latest
+    container_name: agent_zoom
+    restart: unless-stopped
+    volumes:
+      - ./agents:/app  
+    environment:
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET}"
+      LIVEKIT_URL: "ws://localhost:7880"
+    depends_on:
+      - livekit
+    network_mode: host
+  shared_state:
+    build:
+      context: ./agents/shareState
+    image: agent_shared_state:latest
+    container_name: agent_shared_state
+    restart: unless-stopped
+    volumes:
+      - ./agents/shareState:/app
+    environment:
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET}"
+      LIVEKIT_URL: "ws://localhost:7880"
+    depends_on:
+      - livekit
+    network_mode: host
+  assistant_host:
+    build:
+      context: ./agents/assistantHost
+    image: agent_assistant_host:latest
+    container_name: agent_assistant_host
+    restart: unless-stopped
+    volumes:
+      - ./agents/assistantHost:/app
+    environment:
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET}"
+      LIVEKIT_URL: "ws://localhost:7880"
+    depends_on:
+      - livekit
+      - shared_state
+    network_mode: host
+  mongo:
+    build:
+      context: ./mongo
+    image: mongo_portable:latest
+    container_name: mongo1_portable
+    hostname: mongo1
+    command: ["--replSet", "rs0", "--keyFile", "/data/keyfile", "--auth"]
+    volumes:
+      - ./data1:/data/db
+    ports:
+      - "27017:27017"
+  webapp:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+      args:
+        NEXTAUTH_URL: ${NEXTAUTH_URL}
+        NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+        GOOGLE_ID: ${GOOGLE_ID}
+        GOOGLE_SECRET: ${GOOGLE_SECRET}
+        LIVEKIT_URL: ${LIVEKIT_URL}
+        LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+        LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+        ADMIN_EMAIL: ${ADMIN_EMAIL}
+        DATABASE_URL : ${DATABASE_URL}
+        INVITE_JWT_SECRET: ${INVITE_JWT_SECRET}
+        APP_BASE_URL: ${APP_BASE_URL}
+        NEXT_PUBLIC_LIVEKIT_URL: ${NEXT_PUBLIC_LIVEKIT_URL}
+        NEXT_PUBLIC_NODE_IP: ${NEXT_PUBLIC_NODE_IP}
+    image: webapp:latest
+    container_name: webapp
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    volumes:
+      - ./data/bugs:/app/server/data1/bugs
+    depends_on:
+      - redis
+      - livekit
+      - mongo
+    command: >
+        sh -c "
+          echo 'Esperando a que Mongo esté escuchando en 27017...' &&
+          until nc -z localhost 27017; do sleep 3; done &&
+          echo 'Puerto disponible. Ejecutando Prisma...' &&
+          npx prisma db push --schema=./app/dbbackend/model/schema.prisma &&
+          echo 'Iniciando la webapp...' &&
+          npm start
+        "
+    network_mode: host
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - ./certbot/www:/var/www/certbot
+      - ./certbot/certs:/etc/letsencrypt
+    command: >
+      certonly --webroot -w /var/www/certbot
+      -d creativestudio.amplifyproject.eu
+      --non-interactive --agree-tos -m tu-correo@dominio.com
+
+    depends_on:
+      nginx:
+        condition: service_healthy
+
+volumes:
+  redis-data:

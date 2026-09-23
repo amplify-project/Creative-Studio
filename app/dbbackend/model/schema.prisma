@@ -1,0 +1,175 @@
+// prisma/schema.prisma
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ---- NextAuth core models (Mongo-friendly) ----
+model User {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  name          String?
+  email         String   @unique
+  emailVerified DateTime?
+  image         String?
+  globalRole    String   @default("user") // "admin" | "host" | "user"
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  accounts      Account[]
+  sessions      Session[]
+
+  // tus relaciones de dominio:
+  spacesOwned   Space[]
+  memberships   SpaceMember[]
+  sessionRoles  SessionRole[]
+}
+
+model Account {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String   @db.ObjectId
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user   User @relation(fields: [userId], references: [id])
+
+  @@unique([provider, providerAccountId], map: "provider_providerAccountId")
+  @@index([userId], map: "account_user_idx")
+}
+
+model Session {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  sessionToken String   @unique
+  userId       String   @db.ObjectId
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId], map: "session_user_idx")
+}
+
+model VerificationToken {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@index([identifier], map: "verification_identifier_idx")
+}
+
+// ---- Tus modelos de dominio ----
+model Space {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  ownerId   String   @db.ObjectId
+  owner     User     @relation(fields: [ownerId], references: [id])
+  createdAt DateTime @default(now())
+
+  members   SpaceMember[]
+  sessions  SessionDomain[]
+}
+
+model SpaceMember {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  spaceId   String   @db.ObjectId
+  userId    String   @db.ObjectId
+  role      String   // "host"
+  createdAt DateTime @default(now())
+
+  space     Space    @relation(fields: [spaceId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([spaceId, userId], map: "space_user_unique")
+  @@index([userId], map: "space_member_user_idx")
+  @@index([spaceId], map: "space_member_space_idx")
+}
+
+model SessionDomain {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  spaceId   String   @db.ObjectId
+  name      String
+  startAt   DateTime?
+  endAt     DateTime?
+  createdAt DateTime @default(now())
+  // Whether the assistant-host agent is dispatched to this session's room.
+  // Opt-in because it is the expensive path: three ONNX inferences per 960ms
+  // window per audio track, so its cost scales with active participants.
+  // Read server-side in /api/token — never from a client parameter, since
+  // every participant requests a token and could otherwise turn it on or off
+  // for the whole room.
+  // Optional rather than `Boolean @default(false)`: this is MongoDB, and the
+  // documents that already exist have no such field at all. A required field
+  // would make every one of them fail to deserialise until backfilled, so
+  // absent simply reads as "not enabled" — which is the wanted default anyway.
+  assistantEnabled Boolean? @default(false)
+
+  space     Space    @relation(fields: [spaceId], references: [id])
+  roles     SessionRole[]
+}
+
+model SessionRole {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  sessionId String   @db.ObjectId
+  userId    String   @db.ObjectId
+  role      String   // "host" | "participant"
+  createdAt DateTime @default(now())
+
+  session   SessionDomain @relation(fields: [sessionId], references: [id])
+  user      User          @relation(fields: [userId], references: [id])
+
+  @@unique([sessionId, userId], map: "session_user_unique")
+  @@index([userId], map: "session_role_user_idx")
+  @@index([sessionId], map: "session_role_session_idx")
+}
+model PendingMember {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  spaceId   String   @db.ObjectId
+  email     String
+  role      String   // "host" | "participant"
+  createdAt DateTime @default(now())
+
+  @@unique([spaceId, email], map: "pending_space_email_unique")
+}
+
+// Client-emitted LiveKit connection telemetry. Persists across docker
+// compose down because Mongo's data volume is mapped on the host.
+//
+// Not foreign-keyed to SessionDomain on purpose: `sessionId` can be the
+// legacy literal "test" or any arbitrary URL value during dev, and we
+// don't want a bad client to fail-fast the insert.
+model ConnectionEvent {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  ts        DateTime @default(now())
+  // Wall-clock timestamp reported by the client. Useful to detect clock
+  // drift vs `ts` and to keep ordering when events arrive out-of-order.
+  clientTs  DateTime?
+  sessionId String?
+  identity  String?
+  // Who emitted the event: "host" | "participant". Lets the admin viewer
+  // separate host-side problems (which take down the whole session) from
+  // participant-side ones. Null for legacy rows logged before host telemetry.
+  role      String?
+  event     String   // "reconnecting" | "reconnected" | "disconnected"
+  reason    String?  // LiveKit DisconnectReason name when relevant
+  ip        String?
+  userAgent String?
+  // Free-form extra payload (stats samples, attempt counters, etc.).
+  // Kept as Json so future client-side telemetry doesn't need a schema
+  // migration each time.
+  extra     Json?
+
+  @@index([identity, ts], map: "connevt_identity_ts_idx")
+  @@index([sessionId, ts], map: "connevt_session_ts_idx")
+  @@index([ts], map: "connevt_ts_idx")
+}

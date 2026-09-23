@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+html, body, #__next { height: 100%; }
+
+body {
+  @apply bg-zinc-50 text-zinc-900 font-sans antialiased;
+}
+
+.card { @apply bg-white border border-zinc-200 shadow rounded-lg; }
+.input { @apply w-full px-3 py-2 border border-zinc-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-400; }
+.btn { @apply inline-flex items-center justify-center px-4 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700; }
+
+/* Text-style action, used on both `<a>` and `<button>`. It was referenced in
+   six places — the AI-assistant Save, two Remove submits, the invite links
+   and "Back to My Spaces" — but never actually defined, so every one of them
+   rendered as unstyled body text. The reset block is what makes it work on a
+   `<button>`: without it the browser's own button chrome shows through. */
+.link {
+  font: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  @apply inline text-indigo-600 underline underline-offset-2 hover:text-indigo-800;
+}
+.link:focus-visible {
+  @apply outline-2 outline-offset-2 outline-indigo-500;
+}
+.panel{
+  z-index: 9999999;
+}
+.mediaControls{
+  position:absolute;
+  top:40%;
+  left:40px;
+  z-index:9999;
+}
+.panel input,
+.panel select {
+  @apply text-white bg-gray-700 border border-gray-600 rounded p-1 focus:outline-none focus:ring-2 focus:ring-blue-500;
+}
+.maxBannerHeight{
+  max-height: 80vh;
+}
+/* ──────────────────────────────────────────────────────────────────────
+   Mobile support primitives
+   These are generic utilities, deliberately not tied to any one screen —
+   /participant is the first consumer, /host can adopt them unchanged.
+   ────────────────────────────────────────────────────────────────────── */
+
+/* Full viewport height that survives the mobile browser toolbar.
+   `100vh` on iOS Safari / Chrome Android measures the viewport *without*
+   the address bar, so a `h-screen` root is taller than what you can see and
+   its bottom strip is permanently hidden behind the browser chrome. `dvh`
+   tracks the toolbar as it collapses. The `vh` line stays as the fallback
+   for engines that don't know `dvh` — a browser that ignores the second
+   declaration keeps the first. */
+.h-viewport {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* Same fallback pair for dialogs that must stay inside the visible area. */
+.max-h-viewport {
+  max-height: 90vh;
+  max-height: 90dvh;
+}
+
+/* Safe-area padding. Only meaningful because the root layout now ships
+   `viewport-fit=cover`, which lets the page paint under the notch and the
+   home indicator; without these, bottom-anchored UI sits under the
+   indicator on an iPhone. `env()` resolves to 0 everywhere else, so these
+   are inert on desktop and on Android. */
+.pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
+.mb-safe { margin-bottom:  env(safe-area-inset-bottom, 0px); }
+
+/* Dim-until-hover, for chrome that should stay out of the way of the video.
+   Gated on a real pointer: a touch device never fires `mouseenter`, so an
+   unconditional 0.5 opacity there is simply a permanently half-visible
+   control with no way to restore it. */
+@media (hover: hover) and (pointer: fine) {
+  .hover-dim { opacity: 0.5; transition: opacity 0.2s; }
+  .hover-dim:hover,
+  .hover-dim:focus-within { opacity: 1; }
+}
+
+/* iOS Safari zooms the whole page when a focused form control renders below
+   16px, and never zooms back out — which leaves the user stranded at 2x on
+   a video stage. Forcing 16px under `sm` costs a little density and removes
+   the trap entirely. Unlayered on purpose: Tailwind's utilities live in
+   `@layer utilities`, and unlayered rules outrank every layer, so this wins
+   over a `text-xs` on the element without needing `!important`.
+   The padding bump gives the same controls a tappable target. */
+@media (max-width: 639px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+  .panel input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  .panel select {
+    padding: 0.5rem;
+  }
+}

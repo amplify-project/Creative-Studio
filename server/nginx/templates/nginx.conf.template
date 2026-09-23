@@ -1,0 +1,102 @@
+# THIS FILE IS THE NGINX CONFIGURATION.
+#
+# `server/nginx/nginx.conf` is generated from it by gomplate in the nginx
+# container's entrypoint on every start, and the compose mount is read-write —
+# so edits made there are overwritten on the host at the next boot. The copy
+# checked into git is stale (different host name, different limits) and will
+# give a confident wrong answer to anyone who reads it. Change this file.
+#
+# See docs/llm/04-gotchas-and-patterns.md.
+
+events {}
+
+http {
+  upstream livekit_upstream {
+    server 127.0.0.1:7880;
+  }
+  server {
+    listen 80;
+    server_name creativestudio.amplifyproject.eu;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+  }
+  server {
+    listen 443 ssl;
+    server_name creativestudio.amplifyproject.eu;
+    client_max_body_size 50M;
+    proxy_request_buffering off;
+
+    # Timeouts generosos para uploads grandes (Play2Gether: WAV de varias
+    # minutos puede tardar en subir + en que el Next.js procese req.formData()
+    # + writeFile sobre /tmp. Los defaults de 60s causan 504 Gateway Timeout
+    # cuando los clientes se quedan "uploading" indefinidamente).
+    client_body_timeout  300s;   # cliente terminando de enviar el body
+    proxy_send_timeout   300s;   # nginx → upstream (next.js)
+    proxy_read_timeout   300s;   # upstream → nginx (esperando respuesta)
+
+    ssl_certificate     /etc/letsencrypt/live/creativestudio.amplifyproject.eu/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/creativestudio.amplifyproject.eu/privkey.pem;
+
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    location /static/ {
+      alias /usr/share/nginx/html/;
+      add_header 'Access-Control-Allow-Origin' '*' always;
+      add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
+      add_header 'Access-Control-Allow-Headers' 'Origin, Content-Type, Accept, Authorization' always;
+
+      # Manejar preflight OPTIONS
+      if ($request_method = "OPTIONS") {
+        add_header 'Access-Control-Max-Age' 1728000;
+        add_header 'Content-Type' 'text/plain charset=UTF-8';
+        add_header 'Content-Length' 0;
+        return 204;
+      }
+    }
+
+    location / {
+      proxy_pass http://localhost:3000;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+    }
+
+    location /live/ {
+      proxy_pass http://livekit_upstream/;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      	
+    }
+    
+    location /agent {
+      proxy_pass http://livekit_upstream;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /ingress/ {
+      proxy_pass http://{{ getenv "NODE_IP" }}:8080/;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+    }
+  }
+}
