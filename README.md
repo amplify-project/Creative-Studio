@@ -191,7 +191,7 @@ for why that silently degrades the classifiers.
 BSD 2-Clause. See [`LICENSE`](LICENSE).
 
 ## Contributions
-
+- Iñigo Tamayo (Vicomtech): Core
 - Will Wedgwood (Salsa sound) : Speech/Music/Distorsion agent.
 - Patricia De Torres (Vicomtech) : Attention agent.
 
