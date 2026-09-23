@@ -14,12 +14,18 @@ package-lock.json
 /node_modules
 /.next
 /out
-tsconfig.tsbuildinfo
+*.tsbuildinfo
 next-env.d.ts
 
 # Local MongoDB data directory (docker volume), not source.
 /server/data1
 /server/agents/speechAnalysis/data
+
+# LiveKit's own config. It must hold the real API key pair and the redis
+# password, and LiveKit does NOT expand ${VAR} inside it, so there is no way to
+# keep the secrets out of the file itself. Tracking it is how they were
+# committed in the first place: copy server.yaml.example instead.
+server/server.yaml
 
 # Environment files: never commit a filled-in copy — use .env.example.
 .env
@@ -31,6 +37,10 @@ certs/
 server/nginx/certs/
 server/livekit.key
 server/livekit.crt
+
+# Rendered from nginx/templates/nginx.conf.template by the nginx container at
+# start; it is not source and must not be tracked.
+server/nginx/nginx.conf
 
 # Session data written by the agents at runtime, not source.
 server/agents/dataCollection/data/

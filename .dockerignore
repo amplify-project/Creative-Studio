@@ -1,0 +1,36 @@
+# Without this file the build context was 2.09 GB: `COPY . .` in the Dockerfile
+# shipped node_modules, the Next build cache, the Mongo data directory and the
+# local audio files into the image. It also made the build fail outright, since
+# the context walker cannot read certbot's root-owned account directory.
+#
+# Note that server/.env is deliberately NOT excluded: the Dockerfile copies it
+# to .env.local.
+
+.git
+.gitignore
+
+# Reinstalled by `npm i` inside the image, and platform-specific besides.
+node_modules
+.next
+out
+*.tsbuildinfo
+
+# Runtime state written by the stack, not source.
+server/data1
+server/certbot
+server/nginx/certs
+server/agents/dataCollection/data
+server/agents/.venv
+**/__pycache__
+*.pyc
+
+# Local media and scratch material.
+*.wav
+*.ogg
+*.webm
+*.aup
+tests
+reference_data
+
+# Local agent guidance, never part of an image.
+CLAUDE.md

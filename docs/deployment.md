@@ -109,8 +109,14 @@ https://192.168.10.180/ingress/w/8XXTg95xHB9t
 
 ## Generating the LiveKit keys
 
-The API key pair in `server/.env` must match `server/server.yaml`. Generate a
-fresh pair per deployment — never reuse another install's:
+`server/server.yaml` is not tracked — copy `server/server.yaml.example` and
+fill it in. It has to hold real values (LiveKit does not expand `${VAR}` inside
+its own config), which is how the credentials ended up committed in the first
+place; keeping only the example in git removes that possibility.
+
+The API key pair in `server/.env` must match `server/server.yaml`, as must
+`REDIS_PASSWORD` and the `redis: password:` field. Generate a fresh pair per
+deployment — never reuse another install's:
 
 ```bash
 docker run --rm livekit/livekit-server generate-keys

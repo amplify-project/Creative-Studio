@@ -69,11 +69,26 @@ room as ordinary — if hidden — participants. The full reasoning is in
 git clone <this repository>
 cd Creative-Studio
 
-cp .env.example server/.env        # fill in NODE_IP and generate the secrets
-./scripts/fetch-models.sh          # 97 MB of third-party ONNX weights, not in git
+cp .env.example server/.env                    # fill in NODE_IP and generate the secrets
+cp server/server.yaml.example server/server.yaml   # LiveKit's own config, see below
+./scripts/fetch-models.sh                      # 97 MB of third-party ONNX weights, not in git
 cd server
 sudo docker compose up -d
 ```
+
+Neither copied file is tracked, and both must be filled in by hand. LiveKit
+cannot read environment variables from its config, so `server/server.yaml`
+needs two values written into it directly, and both have to agree with
+`server/.env`:
+
+| `server/server.yaml` | must equal |
+|---|---|
+| the `keys:` pair | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` |
+| `redis:` → `password:` | `REDIS_PASSWORD` |
+
+Everything else — including the Redis password the container itself enforces —
+comes from `server/.env`. If a required variable is missing, `docker compose`
+refuses to start and names it, rather than bringing the stack up misconfigured.
 
 The stack brings up LiveKit, its ingress, Redis, MongoDB, nginx, the Python
 agents and the web app. Then open **https://localhost** (the development
