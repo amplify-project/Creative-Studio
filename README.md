@@ -188,7 +188,7 @@ for why that silently degrades the classifiers.
 
 ## License
 
-BSD 2-Clause. See [`LICENSE`](LICENSE).
+GPLv3. See [`LICENSE`](LICENSE).
 
 ## Contributions
 - Iñigo Tamayo (Vicomtech): Core
