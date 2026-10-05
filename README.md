@@ -176,7 +176,7 @@ The assistant's audio analysis uses two third-party ONNX models that are not kep
 - YAMNet, Google, Apache-2.0 — content classification embeddings.
 - The encoder half of the Descript Audio Codec, MIT — distortion embeddings.
 
-*(For a complete overview of third-party licenses, see [Licencesy_summary.txt](LICENSING_SUMMARY.txt))*.
+*(For a complete overview of third-party licenses, see [Licensing_summary.txt](LICENSING_SUMMARY.txt))*.
 
 `./scripts/fetch-models.sh` downloads both and verifies their SHA-256. The two small MLPs beside them are in the repository: they were trained for this project, they are covered by the licence below, and nothing public reproduces them. Do not substitute your own export of the third-party pair — see `server/agents/assistantHost/audioAnalysis/README.md` for why that silently degrades the classifiers.
 
@@ -184,6 +184,8 @@ The assistant's audio analysis uses two third-party ONNX models that are not kep
 ## License
 
 GPLv3. See [`LICENSE`](LICENSE).
+
+*(For a complete overview of third-party licenses, see [Licensing_summary.txt](LICENSING_SUMMARY.txt))*.
 
 ## Contributions
 - Iñigo Tamayo (Vicomtech): Core
