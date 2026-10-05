@@ -1,0 +1,151 @@
+AMPLIFY AUDIO MODELS - LICENSING SUMMARY
+Date: 5 October 2026
+
+Scope: the two classifier models and the two pretrained embedding models they
+depend on:
+
+  content_mlp.onnx    - content classifier (singing / speech / instrumental /
+                        other), runs on YAMNet embeddings
+  distortion_mlp.onnx - distortion classifier (clipping / bandwidth limit /
+                        bass boost / codec artefacts), runs on DAC encoder
+                        embeddings plus 8 hand-written DSP features
+  yamnet_model.onnx   - pretrained audio embedding model (Google)
+  dac_encoder.onnx    - pretrained audio encoder (Descript Audio Codec, 16 kHz)
+
+This is an engineering summary, not legal advice.
+
+
+------------------------------------------------------------------------------
+1. SUMMARY
+------------------------------------------------------------------------------
+
+- The two pretrained models (YAMNet and the DAC encoder) have permissive
+  licences (Apache 2.0 and MIT). They can be shipped commercially if the
+  licence notices are included.
+
+- Most of the training data is public domain, CC0 or CC BY. It can be used
+  commercially with attribution.
+
+- Both classifiers were trained partly on two datasets that are licensed for
+  non-commercial use only: ESC-50 and UrbanSound8K (both CC BY-NC 3.0).
+  These make up about 6% of the content_mlp training data and about 19% of
+  the distortion_mlp training data. It is legally unsettled whether a model
+  trained on non-commercial data is itself restricted to non-commercial use.
+  The cautious position is that the current builds should not be used
+  commercially until they are retrained without these datasets or a
+  commercial licence is obtained.
+
+
+------------------------------------------------------------------------------
+2. SHIPPED MODEL FILES
+------------------------------------------------------------------------------
+
+YAMNet  (yamnet_model.onnx)
+  Source:      Google, TensorFlow Models (research/audioset/yamnet), converted
+               to ONNX
+  Licence:     Apache License 2.0
+  Commercial:  Yes
+  Obligations: Include the Apache 2.0 licence text and a notice that the
+               model was converted to ONNX
+  Note:        Google trained YAMNet on AudioSet, which is drawn from YouTube
+               videos. Google released the model under Apache 2.0.
+
+DAC encoder  (dac_encoder.onnx)
+  Source:      Descript Audio Codec v1.0.0, 16 kHz weights
+               (github.com/descriptinc/descript-audio-codec). The encoder
+               plus time mean-pooling, exported to ONNX.
+  Licence:     MIT (Copyright (c) 2023-present, Descript). The repository
+               states that the weights are also released under MIT.
+  Commercial:  Yes
+  Obligations: Include the MIT copyright and permission notice
+  Note:        According to the DAC paper, Descript trained the model on a
+               mix of public datasets, some of which are themselves
+               non-commercial. Descript released the weights under MIT. This
+               raises the same unsettled question as Section 4, one level
+               upstream.
+
+content_mlp.onnx / distortion_mlp.onnx
+  Our own models. Their status depends on the training data in Sections 3
+  and 4.
+
+
+------------------------------------------------------------------------------
+3. TRAINING DATA - COMMERCIAL USE PERMITTED
+------------------------------------------------------------------------------
+
+Dataset              Used by                  Licence
+-------------------  -----------------------  --------------------------------
+MUSAN                content, distortion      Licensed per file: CC BY,
+(speech/music/noise)                          CC BY-SA, CC BY-ND or US public
+                                              domain. The corpus authors
+                                              excluded non-commercial
+                                              material. 5 music tracks are
+                                              CC BY-ND; whether training on
+                                              them counts as creating a
+                                              "derivative work" is a minor
+                                              grey area.
+VocalSet             content, distortion      CC BY 4.0
+SingVERSE            content                  CC BY 4.0
+(amphion/SingVERSE)
+Common Voice         distortion               CC0. Downloading requires
+Spontaneous Speech                            agreeing not to try to identify
+(SPS corpus, EN)                              the speakers.
+VoxPopuli            distortion               CC0 (audio)
+
+Attribution is required for MUSAN (per-file credits are in the corpus
+LICENSE files), VocalSet and SingVERSE.
+
+
+------------------------------------------------------------------------------
+4. TRAINING DATA - NON-COMMERCIAL ONLY
+------------------------------------------------------------------------------
+
+Dataset         Licence          content_mlp share   distortion_mlp share
+--------------  ---------------  ------------------  --------------------
+ESC-50          CC BY-NC 3.0     ~1.5%               ~5%
+                (only the ESC-10
+                subset is CC BY)
+UrbanSound8K    CC BY-NC 3.0     ~4.5%               ~14%
+
+Both datasets were used in the training and validation splits of both
+models. In both models they supply environmental and urban sounds: the
+"other" class in content_mlp, and clean and distorted examples in
+distortion_mlp.
+
+
+------------------------------------------------------------------------------
+5. TOOLS USED IN TRAINING ONLY (NOT SHIPPED)
+------------------------------------------------------------------------------
+
+These tools were used to generate distorted training audio. They are not
+part of the shipped models, so they create no obligations unless someone
+redistributes them.
+
+  libopus       BSD-3-Clause
+  ffmpeg        LGPL/GPL (depends on the build)
+  PyTorch       BSD-style
+  scikit-learn  BSD-3-Clause
+
+If the runtime ships ONNX Runtime to run the models, include its MIT licence.
+
+
+------------------------------------------------------------------------------
+6. PLANNED NEXT STEPS
+------------------------------------------------------------------------------
+
+For commercial use, either:
+
+  (a) retrain both classifiers without ESC-50 and UrbanSound8K, replacing
+      them with commercially usable sources such as the CC BY ESC-10
+      subset, the CC0 and CC BY clips of FSD50K, and the existing MUSAN
+      noise; or
+
+  (b) obtain commercial licences from the ESC-50 and UrbanSound8K authors.
+
+Ship an attribution/NOTICE file containing: YAMNet (Apache 2.0), DAC (MIT),
+ONNX Runtime (MIT, if bundled), MUSAN per-file credits, VocalSet (CC BY 4.0)
+and SingVERSE (CC BY 4.0).
+
+Open item: the singing training examples in content_mlp came from an
+earlier project that applied reverb and layering augmentation. We are
+checking whether that augmentation introduced any other third-party audio.
