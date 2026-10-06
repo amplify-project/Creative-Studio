@@ -55,7 +55,10 @@ server/agents/dataCollection/data/
 *.ogg
 *.webm
 *.aup
-/tests/
+/tests/*
+# ...except the code tests, which are source. Audio stays out even there (*.wav above).
+!/tests/unit/
+!/tests/python/
 /reference_data/
 /test.py
 
