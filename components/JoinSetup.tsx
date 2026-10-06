@@ -3,15 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 import { createLocalAudioTrack, createLocalVideoTrack, ConnectionQuality, RoomEvent } from "livekit-client";
 import { AUDIO_MODE_PRESETS, type AudioMode } from "./audioSelector";
+import { captureFor } from "../app/utils/micCapture";
 import { Mic, Video, Loader2, VideoOff, WifiOff, Wifi, Volume2, Play } from "lucide-react";
 import { useMicLevel, dbToPercent, SIGNAL_DB, LOW_DB } from "../app/hooks/useMicLevel";
 import {
   readStoredVolume,
-  writeStoredVolume,
   readStoredOutputDevice,
-  writeStoredOutputDevice,
   canChooseOutputDevice,
+  readStoredInputDevice,
+  writeStoredInputDevice,
 } from "../app/hooks/useOutputVolume";
+import { setOutputDevice as busSetOutputDevice, setOutputVolume as busSetOutputVolume } from "../app/utils/outputBus";
 import { testToneUrl } from "../app/utils/testTone";
 
 interface JoinSetupProps {
@@ -61,7 +63,14 @@ export default function JoinSetup({ room, audioMode = "speech", onJoined }: Join
       })
       .then((list) => {
         setVideoDevices(list.filter((d) => d.kind === "videoinput"));
-        setAudioDevices(list.filter((d) => d.kind === "audioinput"));
+        const inputs = list.filter((d) => d.kind === "audioinput");
+        setAudioDevices(inputs);
+        // Last visit's mic, if it is still plugged in. deviceIds are stable
+        // per origin, so a match is the same device.
+        const storedMic = readStoredInputDevice();
+        if (storedMic && inputs.some((d) => d.deviceId === storedMic)) {
+          setSelectedAudioDevice(storedMic);
+        }
         setOutputDevices(list.filter((d) => d.kind === "audiooutput"));
       })
       .catch(() => {})
@@ -89,8 +98,8 @@ export default function JoinSetup({ room, audioMode = "speech", onJoined }: Join
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
-            ...AUDIO_MODE_PRESETS[audioMode].capture,
-            ...(selectedAudioDevice ? { deviceId: { exact: selectedAudioDevice } } : {}),
+            ...captureFor(audioMode, selectedAudioDevice || "default"),
+            deviceId: selectedAudioDevice ? { exact: selectedAudioDevice } : undefined,
           },
         });
         if (!active) {
@@ -200,8 +209,14 @@ export default function JoinSetup({ room, audioMode = "speech", onJoined }: Join
       // Persist the speaker choice before publishing — useOutputVolume reads
       // it back to set every remote participant, including ones who join
       // later, and switchActiveDevice routes the room's audio elements.
-      writeStoredVolume(outputVolume);
-      writeStoredOutputDevice(selectedOutputDevice);
+      // Through the output bus, not straight to storage: Play2Gether and every
+      // other app sound read the bus, and it caches.
+      busSetOutputVolume(outputVolume);
+      busSetOutputDevice(selectedOutputDevice);
+      // The mic too: MediaControls re-captures on every music/speech switch and
+      // on unmute, and used to do it with deviceId "default" — silently moving
+      // anyone who picked a non-default mic here back to the system one.
+      writeStoredInputDevice(selectedAudioDevice);
       if (canPickOutput && selectedOutputDevice) {
         await room.switchActiveDevice("audiooutput", selectedOutputDevice).catch(() => {});
       }
@@ -217,10 +232,9 @@ export default function JoinSetup({ room, audioMode = "speech", onJoined }: Join
       }
 
       // Publish audio with mode preset
-      const audioTrack = await createLocalAudioTrack({
-        ...preset.capture,
-        deviceId: selectedAudioDevice || "default",
-      });
+      const audioTrack = await createLocalAudioTrack(
+        captureFor(audioMode, selectedAudioDevice || "default"),
+      );
       await room.localParticipant.publishTrack(audioTrack, { ...preset.publish });
 
       onJoined();

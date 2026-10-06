@@ -34,7 +34,9 @@ export const AUDIO_MODE_PRESETS: Record<
       echoCancellation: false,
       autoGainControl: false,
       voiceIsolation: false,  // ❌ sin procesado de voz
-      channelCount: 2,        // estéreo
+      // Stereo, unless the device turns out to have a dead side — then it is
+      // captured mono (app/utils/micCapture.ts, watchForDeadChannel).
+      channelCount: 2,
       sampleRate: 48000,
       sampleSize: 24,
       latency: 0.1,
@@ -49,9 +51,14 @@ export const AUDIO_MODE_PRESETS: Record<
     capture: {
       noiseSuppression: true,   // ✅
       echoCancellation: true,   // ✅
-      autoGainControl: false,    // ✅
+      // AGC on for speech: without it a laptop mic at arm's length reaches the
+      // room raw and quiet. Music keeps it off — it would pump the dynamics.
+      autoGainControl: true,    // ✅
       voiceIsolation: true,     // ✅ ahora activado
-      channelCount: 2,          // mono
+      // Mono. This said "mono" but asked for 2: echo cancellation processes in
+      // mono anyway, so speech gained nothing from it, and an interface with
+      // the mic in input 1 put the speaker in one ear only.
+      channelCount: 1,
       sampleRate: 48000,
       sampleSize: 16,
       latency: 0.05,

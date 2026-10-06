@@ -13,7 +13,9 @@ import { useKicked } from "../app/hooks/useKicked";
 import { useOutputVolume } from "../app/hooks/useOutputVolume";
 import PopupMessage from "./ui/PopupMessage";
 import type { AudioMode } from "../app/types/sharedStateTypes";
-import Play2GetherClientPanel from "./Play2GetherClientPanel";
+import ParticipantControlPanel from "./ParticipantControlPanel";
+import Play2GetherClientPanel, { type P2GPanelStatus } from "./Play2GetherClientPanel";
+import { Play2GetherLyricsBanner } from "./LyricsOverlay";
 import { ToastLane, LANE_ORDER } from "./ui/ToastLane";
 
 interface RoomNotification {
@@ -28,6 +30,7 @@ export default function MainStageParticipant() {
   const tracks = useTracks();
   const state = useSharedState();
   const [joined, setJoined] = useState(false);
+  const [p2gStatus, setP2gStatus] = useState<P2GPanelStatus>({ active: false, urgent: false, attention: false });
   const [notifications, setNotifications] = useState<RoomNotification[]>([]);
 
   const currentAudioMode: AudioMode = (state.state?.ui?.audioMode as AudioMode) ?? "speech";
@@ -90,21 +93,40 @@ export default function MainStageParticipant() {
         />
       )}
 
-      {/* Stage: everything the column has left over. `relative` because the
-          Play2Gether overlay and the lyrics banner position against it. */}
-      <div className="relative min-h-0 flex-1">
-      <MainStage
-        className="absolute inset-0"
-        displayVideos={mainStageVideos}
-        layout={layout}
-        pinnedVideo={pinnedVideo}
-        customPositions={customPositions}
-        updatePosition={updatePosition}
-        isHost={false}
-      />
+      {/* Stage row: the stage takes what is left, and the side panel (chat,
+          files, utils, Play2Gether) is a column on the right when open — a
+          band under the stage on phones. The stage is resized, never covered.
+          A Play2Gether session opens the column on its tab by itself. */}
+      <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
+        {/* `relative` because the lyrics banner positions against it. */}
+        <div className="relative min-h-0 min-w-0 flex-1">
+          <MainStage
+            className="absolute inset-0"
+            displayVideos={mainStageVideos}
+            layout={layout}
+            pinnedVideo={pinnedVideo}
+            customPositions={customPositions}
+            updatePosition={updatePosition}
+            isHost={false}
+          />
+          {/* Gates itself on phase + lyrics, and reads with capture off. */}
+          {joined && <Play2GetherLyricsBanner />}
+        </div>
 
-      {/* Play2Gether overlay — only visible when a session is active */}
-      {joined && <Play2GetherClientPanel />}
+        {/* Chat, files, utils — and the Play2Gether tab while a session is
+            on. A column, not an overlay: opening it resizes the stage. */}
+        <ParticipantControlPanel
+          role="participant"
+          docked
+          play={{
+            // Not before Join: its hook arms the recorder, which has no
+            // business running behind the pre-join screen.
+            content: joined ? <Play2GetherClientPanel onStatus={setP2gStatus} /> : null,
+            active: joined && p2gStatus.active,
+            urgent: p2gStatus.urgent,
+            attention: p2gStatus.attention,
+          }}
+        />
       </div>
 
       {/* Control bar: its own row, so it never covers the stage. It carries
@@ -115,6 +137,7 @@ export default function MainStageParticipant() {
           room={room}
           autoPublish={false}
           audioMode={currentAudioMode}
+          telemetryRole="participant"
           variant="bar"
         />
       )}

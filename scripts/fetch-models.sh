@@ -3,7 +3,7 @@
 # Fetch the two third-party ONNX models the assistant's audio analysis needs.
 #
 # They are not in the repository: together they are 97 MB of weights that
-# belong to Google and to Descript, and redistributing them inside this BSD-2
+# belong to Google and to Descript, and redistributing them inside this GPLv3
 # tree would be both a licensing mess and a heavy clone for every fork. The two
 # small MLPs beside them (content_mlp.onnx, distortion_mlp.onnx) ARE in the
 # repository — they were trained for this project and nothing public can

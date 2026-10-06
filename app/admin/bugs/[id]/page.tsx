@@ -72,6 +72,8 @@ export default async function BugDetailPage({ params }: { params: Promise<{ id: 
     microphone: { deviceId: string | null; label: string | null; isMuted: boolean | null; constraints: any } | null;
     camera: { deviceId: string | null; label: string | null; isMuted: boolean | null; constraints: any } | null;
   } | undefined;
+  const output = r.output as
+    { deviceId: string; label: string | null; volume: number; roomFactor: number } | null | undefined;
   const docHidden = r.docHidden as boolean | null | undefined;
   const memory = r.memory as { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number } | null | undefined;
 
@@ -296,6 +298,23 @@ export default async function BugDetailPage({ params }: { params: Promise<{ id: 
         * cause where packets flow but they carry silence. Mic constraints
         * (AGC/AEC/NS) are shown because AGC clamping is the other common
         * cause of "very quiet" reports. */}
+      {/* Where this client's sound goes (reports from 2026-09-29 on). A
+        * volume near 0 or a room duck still active explains "I can't hear";
+        * the speaker explains "it came out of the laptop". */}
+      {output && (
+        <Section title="Audio output">
+          <div className="flex flex-wrap gap-4 text-xs font-mono">
+            <span className="text-zinc-100">{output.label ?? output.deviceId}</span>
+            <span className={output.volume < 0.2 ? "text-amber-300" : "text-zinc-300"}>
+              volume={Math.round(output.volume * 100)}%
+            </span>
+            {output.roomFactor < 1 && (
+              <span className="text-amber-300">room held at {Math.round(output.roomFactor * 100)}%</span>
+            )}
+          </div>
+        </Section>
+      )}
+
       {activeInputDevices && (activeInputDevices.microphone || activeInputDevices.camera) && (
         <Section title="Active capture devices">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
@@ -331,9 +350,10 @@ export default async function BugDetailPage({ params }: { params: Promise<{ id: 
                     <div className="mt-1 flex flex-wrap gap-1">
                       {Object.entries(dev.constraints).map(([k, v]) => {
                         if (v === undefined || v === null) return null;
-                        // AGC ON + "very quiet" reports = classic clamping
-                        // pattern. Flag in amber so it's easy to scan.
-                        const flag = (kind === "microphone" && k === "autoGainControl" && v === true) ? "text-amber-400" : "text-zinc-300";
+                        // No AGC flag: speech mode asks for it on and music
+                        // for it off, and the report doesn't say which mode
+                        // was live, so neither value is suspicious by itself.
+                        const flag = "text-zinc-300";
                         return (
                           <span key={k} className={`px-1.5 py-0.5 rounded bg-zinc-800 font-mono text-[10px] ${flag}`}>
                             {k}={String(v)}

@@ -26,7 +26,7 @@ import {
   type SetStateAction,
 } from "react";
 
-export type PanelTab = "chat" | "notes" | "audio" | "qr";
+export type PanelTab = "chat" | "notes" | "audio" | "qr" | "p2g";
 
 type ControlPanelValue = {
   open: boolean;

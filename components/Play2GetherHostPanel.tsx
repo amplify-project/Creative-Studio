@@ -22,6 +22,7 @@ import {
   syncRoundDurationSec,
 } from "../app/lib/p2gSync";
 import { useSharedStateContext } from "../app/hooks/useSharedState";
+import { outputNode } from "../app/utils/outputBus";
 
 // ─── Small helpers ────────────────────────────────────────────────────────────
 
@@ -1275,7 +1276,7 @@ function useMixPreview({ sources, onPlayhead }: {
     for (const { src, buf } of usable) {
       const g = ctx.createGain();
       g.gain.value = src.gain;
-      g.connect(ctx.destination);
+      g.connect(outputNode(ctx));
       gainNodesRef.current.set(src.id, g);
       const node = ctx.createBufferSource();
       node.buffer = buf;
@@ -1886,11 +1887,17 @@ function MasterPlayer({ src, label = "Master mix", fallbackDuration, onPlayhead 
 
 // ─── Help panel content ───────────────────────────────────────────────────────
 
-function HelpPanel({ onClose, width, height }: { onClose: () => void; width: number; height: number }) {
+function HelpPanel({ onClose, width, height, fill = false }: {
+  onClose: () => void; width: number; height: number;
+  /** Take the parent's box instead of a fixed size (embedded panel). */
+  fill?: boolean;
+}) {
   return (
     <div
-      className="bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl flex flex-col overflow-hidden"
-      style={{ width, height }}
+      className={fill
+        ? "bg-zinc-900 flex flex-col overflow-hidden flex-1 min-h-0"
+        : "bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl flex flex-col overflow-hidden"}
+      style={fill ? undefined : { width, height }}
     >
       <div className="flex items-center justify-between px-4 py-3 bg-zinc-900 border-b border-zinc-800">
         <div className="flex items-center gap-2">
@@ -2069,7 +2076,20 @@ function pickCaptureMime(): string | null {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function Play2GetherHostPanel({ onClose }: { onClose: () => void }) {
+/**
+ * @param embedded Render as the content of the host's docked side column (the
+ *   "Play" tab) instead of a draggable floating card: no Rnd, fills its box,
+ *   and the help replaces the body instead of opening beside it. The host
+ *   asked for it after the participant panel moved to a column — the floating
+ *   card sat on the videos the host is there to watch.
+ */
+export default function Play2GetherHostPanel({
+  onClose,
+  embedded = false,
+}: {
+  onClose: () => void;
+  embedded?: boolean;
+}) {
   const room = useRoomContext();
   const {
     p2g, phase, countdown, recordingProgress, host,
@@ -2727,22 +2747,17 @@ export default function Play2GetherHostPanel({ onClose }: { onClose: () => void 
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  return (
-    <Rnd
-      position={position}
-      onDragStop={(_, d) => setPosition({ x: d.x, y: d.y })}
-      size={{ width: helpOpen ? TOTAL_W_WITH_HELP : MAIN_W, height: "auto" }}
-      enableResizing={false} dragHandleClassName="p2g-drag-handle"
-      className="z-50" bounds="parent">
-      <div className="flex gap-3 items-stretch">
+  const card = (
         <div
-          className="bg-zinc-950 border border-zinc-800 rounded-xl shadow-2xl flex flex-col overflow-hidden"
-          style={{ width: MAIN_W, height: PANEL_H }}
+          className={embedded
+            ? "bg-zinc-950 flex flex-col overflow-hidden h-full min-h-0"
+            : "bg-zinc-950 border border-zinc-800 rounded-xl shadow-2xl flex flex-col overflow-hidden"}
+          style={embedded ? undefined : { width: MAIN_W, height: PANEL_H }}
         >
 
         {/* Header */}
-        <div className="p2g-drag-handle cursor-grab active:cursor-grabbing select-none
-                        flex items-center justify-between px-4 py-3 bg-zinc-900 border-b border-zinc-800">
+        <div className={`${embedded ? "" : "p2g-drag-handle cursor-grab active:cursor-grabbing "}select-none
+                        flex items-center justify-between px-4 py-3 bg-zinc-900 border-b border-zinc-800 shrink-0`}>
           <div className="flex items-center gap-2">
             <Music2 className="w-4 h-4 text-teal-400" />
             <span className="font-semibold text-sm text-white">Play2Gether</span>
@@ -2761,13 +2776,16 @@ export default function Play2GetherHostPanel({ onClose }: { onClose: () => void 
           </div>
         </div>
 
-        <div className="flex flex-col gap-4 p-4 overflow-y-auto flex-1 min-h-0
+        {embedded && helpOpen && (
+          <HelpPanel fill onClose={() => setHelpOpen(false)} width={HELP_W} height={PANEL_H} />
+        )}
+        <div className={`${embedded && helpOpen ? "hidden" : "flex"} flex-col gap-4 p-4 overflow-y-auto flex-1 min-h-0
                         [scrollbar-width:thin] [scrollbar-color:rgb(13_148_136)_transparent]
                         [&::-webkit-scrollbar]:w-2
                         [&::-webkit-scrollbar-track]:bg-transparent
                         [&::-webkit-scrollbar-thumb]:rounded-full
                         [&::-webkit-scrollbar-thumb]:bg-teal-600/70
-                        [&::-webkit-scrollbar-thumb]:hover:bg-teal-500">
+                        [&::-webkit-scrollbar-thumb]:hover:bg-teal-500`}>
           {error && (
             <div className="bg-rose-900/60 border border-rose-700 rounded px-3 py-2 text-xs text-rose-200">
               {error}
@@ -3724,7 +3742,19 @@ export default function Play2GetherHostPanel({ onClose }: { onClose: () => void 
           )}
         </div>
         </div>
+  );
 
+  if (embedded) return card;
+
+  return (
+    <Rnd
+      position={position}
+      onDragStop={(_, d) => setPosition({ x: d.x, y: d.y })}
+      size={{ width: helpOpen ? TOTAL_W_WITH_HELP : MAIN_W, height: "auto" }}
+      enableResizing={false} dragHandleClassName="p2g-drag-handle"
+      className="z-50" bounds="parent">
+      <div className="flex gap-3 items-stretch">
+        {card}
         {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} width={HELP_W} height={PANEL_H} />}
       </div>
     </Rnd>

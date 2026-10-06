@@ -53,8 +53,8 @@ makes ffmpeg skip the track entirely.
 | File | Role |
 |---|---|
 | [app/hooks/usePlay2GetherSession.ts](../../app/hooks/usePlay2GetherSession.ts) | Central hook. ~870 lines. Shared state, phase derivation, NTP-lite offset, AudioWorklet capture, WAV encoding, upload, host methods, audio playback. |
-| [components/Play2GetherHostPanel.tsx](../../components/Play2GetherHostPanel.tsx) | Draggable host panel (react-rnd). Steps Open Session / Reference / Rehearsal / Launch / Mixer / Reset. Help drawer. Calibration entry. |
-| [components/Play2GetherClientPanel.tsx](../../components/Play2GetherClientPanel.tsx) | Participant overlay: countdown / recording / uploading / mixing / done + passive observer view. Floats over the room (no full-screen backdrop). |
+| [components/Play2GetherHostPanel.tsx](../../components/Play2GetherHostPanel.tsx) | Host panel. Steps Open Session / Reference / Rehearsal / Launch / Mixer / Reset. Help drawer. Calibration entry. On /host it is rendered `embedded` as the **Play** tab of the docked side column (no drag, help replaces the body); the draggable react-rnd card is the non-embedded fallback, currently unused. |
+| [components/Play2GetherClientPanel.tsx](../../components/Play2GetherClientPanel.tsx) | Participant panel: countdown / recording / uploading / mixing / done + passive observer view. Lives as the **Play** tab of the participant's docked side panel (`ParticipantControlPanel docked`), next to the chat: a column right of the stage (a band below it on phones), the stage resized rather than covered. Reports `{active, urgent, attention}` up via `onStatus`; the column opens on this tab when a session starts and jumps to it for countdown/take/calibration round. It owns the `capture` hook instance — never unmount it mid-session, hide it. The lyrics banner is mounted by `MainStageParticipant` inside the stage, not by this panel. |
 | [components/Play2GetherCalibration.tsx](../../components/Play2GetherCalibration.tsx) | Shared `CalibrationFlow` + `CalibrationButton` + `runAcousticTrial` (acoustic-loopback latency measurement). Used by both host and client panels. |
 | [components/LyricsOverlay.tsx](../../components/LyricsOverlay.tsx) | LRC parser + bottom-banner UI (`Play2GetherLyricsBanner` is the entry component that calls the hook). |
 | [public/play2gether-capture-worklet.js](../../public/play2gether-capture-worklet.js) | AudioWorkletProcessor: accumulates 4800-sample batches, writes exactly 128 samples per `process()` (zero-pad on empty input). |
@@ -1058,7 +1058,7 @@ a reconnect thirty seconds earlier are one story, not two.
 |---|---|---|
 | `p2g_clock` | once per hook mount, when an identity exists | `offsetMs`, `offsetSpreadMs`, `rttMin/Med/Max`, `validSamples` |
 | `p2g_reference` | reference fetch+decode settles | `bytes`, `fetchMs`, `decodeMs`, `fallback`, `ok` |
-| `p2g_take` | capture ended, BEFORE the bytes leave | `bytes`, `capturedMs`, `expectedMs`, `shortfallMs`, `captureDelayMs`, `clapOffsetMs`, `calibrated`, `slot`/`total`, `staggerDelayMs` |
+| `p2g_take` | capture ended, BEFORE the bytes leave | `bytes`, `sampleRate` (recorder context), `trackSampleRate` (mic), `capturedMs`, `expectedMs`, `shortfallMs`, `ctxElapsedMs`/`wallElapsedMs`/`ctxLagMs`, `captureDelayMs`, `clapOffsetMs`, `calibrated`, `slot`/`total`, `staggerDelayMs` |
 | `p2g_upload` | transfer settled (either way) | `ok`, `bytes`, `waitMs`, `uploadMs`, `recvMs`, `serverMs`, `kbps`, `kbpsSource`, `error` |
 
 All carry `netInfo()` (`netType`, `downlinkMbps`, `netRttMs`) and the round's
@@ -1086,6 +1086,16 @@ All carry `netInfo()` (`netType`, `downlinkMbps`, `netRttMs`) and the round's
   means this singer's alignment is a guess. Path asymmetry (satellite, rural
   4G) biases it in a way the median can't remove — the acoustic calibration
   won't catch it either, because that measures the *device*, not the clock.
+- **`shortfallMs` far from ±200 ms** is a broken take, and the clock fields
+  say which kind. `ctxLagMs` large (recorder context behind the wall clock) =
+  the audio thread missed render callbacks and each one cut audio out, so the
+  take drifts early after every gap. Field session 2026-09-28: one player's
+  context ran at **96 kHz** and lost 13–26 % of every take; the recorder
+  context is now pinned to 48 kHz. A take whose `bytes` equal the same
+  player's previous take is the **stale-buffer** bug fixed the same day: a
+  round whose recorder never armed (no mic published) uploaded the previous
+  round's samples. `capturedMs` then matches the previous round's length, not
+  this one's.
 - **A `p2g_take` with no matching `p2g_upload`** is a take that died in memory.
   The stagger wait is the one window where a take exists nowhere else and has
   no retry, so its absence had to be made visible. `retryUpload()` re-enters

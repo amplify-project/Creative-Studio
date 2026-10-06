@@ -9,6 +9,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { routeContextDeviceOnly } from "../app/utils/outputBus";
 import { useMaybeRoomContext } from "@livekit/components-react";
 import type { Room } from "livekit-client";
 import { Loader2, CheckCircle2, AlertTriangle, Gauge, ChevronRight } from "lucide-react";
@@ -115,6 +116,11 @@ export async function runAcousticTrial(
   let ctx: AudioContext | null = null;
   try {
     ctx = new AudioContext();
+    // Measure on the speaker the listener actually hears. Device only, no
+    // volume: the click has to be loud enough to find whatever the listener's
+    // volume is set to. Awaited, because setSinkId is async and the trial must
+    // not start on the system default and finish on the chosen device.
+    await routeContextDeviceOnly(ctx);
     await ctx.resume();
     await ctx.audioWorklet.addModule("/play2gether-capture-worklet.js");
 

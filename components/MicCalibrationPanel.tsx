@@ -22,6 +22,18 @@ import type { MicIssue } from "../app/skills/types";
 import { useMicLevel, dbToPercent, FLOOR_DB, SIGNAL_DB, LOW_DB } from "../app/hooks/useMicLevel";
 
 
+/** Where the input gain lives on this OS. The panel can only guide: browsers
+ *  ignore the `volume` constraint, so the user has to move the OS slider. */
+function inputGainHint(): string | null {
+  if (typeof navigator === "undefined") return null;
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod|Android/i.test(ua)) return null;
+  if (/Mac OS X|Macintosh/i.test(ua)) return "On a Mac: System Settings → Sound → Input → Input volume.";
+  if (/Windows/i.test(ua)) return "On Windows: Settings → System → Sound → Input → Volume.";
+  if (/Linux|X11|CrOS/i.test(ua)) return "On Linux: open Sound settings or pavucontrol → Input Devices and raise your mic — above 100% is fine.";
+  return null;
+}
+
 type Props = {
   room: any;
   /** What the analyser flagged, so the guidance matches the problem. The meter
@@ -93,6 +105,9 @@ export default function MicCalibrationPanel({
                   ? "We can hear you, but you're arriving quietly enough to get buried in the mix. Raise the input gain in your system sound settings, or move closer to the mic, until your loudest peaks reach the green band."
                   : "Sing or play at your loudest. Aim for the peaks to sit in the green band, without touching the red."}
             </p>
+            {issue === "low_level" && inputGainHint() && (
+              <p className="text-sm text-neutral-400">{inputGainHint()}</p>
+            )}
 
             <div className="relative h-6 w-full overflow-hidden rounded bg-neutral-800">
               {/* Red zone marker at -3 dBFS. */}

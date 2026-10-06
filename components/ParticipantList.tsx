@@ -6,6 +6,8 @@ import {
   ZoomIn, Eye, EyeOff, Pin, X, PinOff, Volume2, VolumeX, Mic, MicOff, UserX, Radio,
   Signal, SignalHigh, SignalLow, WifiOff,
 } from "lucide-react";
+import { outputNode } from "../app/utils/outputBus";
+import IncomingAudioMeter from "./ui/IncomingAudioMeter";
 
 // Short rising two-tone "join" ping (C5 → E5). Lower and warmer than the
 // chat ping so the host can distinguish "someone joined" from "new message".
@@ -23,7 +25,7 @@ function playJoinPing() {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(outputNode(ctx));
       osc.type = "sine";
       osc.frequency.value = freq;
       gain.gain.setValueAtTime(0, ctx.currentTime + start);
@@ -303,14 +305,14 @@ export default function ParticipantList({
                 </span>
               )}
               <QualityIndicator quality={qualities[baseId]} />
-              {/* Indicador mic: basado en audioTrackPublications del room,
-                  independiente de si estamos suscritos o no */}
-              <span title={(room?.getParticipantByIdentity(baseId)?.audioTrackPublications?.size ?? 0) > 0 ? "Mic on" : "Mic off"}>
-                {(room?.getParticipantByIdentity(baseId)?.audioTrackPublications?.size ?? 0) > 0
-                  ? <Mic size={14} className="text-green-400 shrink-0" />
-                  : <MicOff size={14} className="text-gray-500 shrink-0" />
-                }
-              </span>
+              {/* Mic: fills green while this person is sending sound (SFU
+                  level, so it works even when we are not subscribed to them);
+                  MicOff when they have no live mic. One icon, not a mic plus
+                  a meter beside it. */}
+              <IncomingAudioMeter
+                identity={baseId}
+                whenOff={<span title="Mic off"><MicOff size={14} className="text-gray-500 shrink-0" /></span>}
+              />
             </div>
             {baseId !== hostId  && (
               <button

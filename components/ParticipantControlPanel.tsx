@@ -17,10 +17,11 @@ import { QRCodeSVG } from "qrcode.react";
 import {
   Send, Loader2, MessageSquare, QrCode, LogOut, X,
   ChevronRight, ChevronLeft, FileText, AudioLines,
-  MonitorUp, Camera as CameraIcon,
+  MonitorUp, Camera as CameraIcon, Music2,
 } from "lucide-react";
 import NotesTab from "./NotesTab";
 import AudioAnalysisTab from "./AudioAnalysisTab";
+import { outputNode } from "../app/utils/outputBus";
 
 // Short notification ping via Web Audio API — no audio asset to ship, plays
 // only after the page has received a user gesture (browser autoplay policy
@@ -36,7 +37,7 @@ function playChatPing() {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(outputNode(ctx));
     osc.type = "sine";
     osc.frequency.value = 880;
     gain.gain.setValueAtTime(0, ctx.currentTime);
@@ -80,7 +81,7 @@ interface ChatToast {
 const TOAST_TTL_MS = 5000;
 const MAX_VISIBLE_TOASTS = 3;
 
-type Tab = "chat" | "notes" | "audio" | "qr";
+type Tab = "chat" | "notes" | "audio" | "qr" | "p2g";
 
 // Reactions used to be a tab here. They are one tap on the control bar now
 // (components/ui/ReactionsContext.tsx) — a panel that covers most of a phone
@@ -90,7 +91,10 @@ type Tab = "chat" | "notes" | "audio" | "qr";
 // `hostOnly` is the tab table's own business: the panel is mounted by both
 // pages, and the Audio tab is the analyser's readout, written for whoever is
 // running the session.
-const ALL_TABS: { id: Tab; label: string; icon: React.ReactNode; hostOnly?: boolean }[] = [
+const ALL_TABS: { id: Tab; label: string; icon: React.ReactNode; hostOnly?: boolean; p2gOnly?: boolean }[] = [
+  // Only while the page hands the docked panel something to show there
+  // (see `play`): the participant's Play2Gether panel, the host's mixer.
+  { id: "p2g",   label: "Play",  icon: <Music2 size={14} />, p2gOnly: true },
   { id: "chat",  label: "Chat",  icon: <MessageSquare size={14} /> },
   { id: "notes", label: "Files", icon: <FileText size={14} /> },
   { id: "audio", label: "Audio", icon: <AudioLines size={14} />, hostOnly: true },
@@ -105,8 +109,35 @@ const ALL_TABS: { id: Tab; label: string; icon: React.ReactNode; hostOnly?: bool
  */
 export default function ParticipantControlPanel({
   role = "participant",
+  docked = false,
+  play,
 }: {
   role?: "host" | "participant";
+  /**
+   * A column in the page layout (the stage is resized around it) instead of a
+   * fixed overlay, and home of the "Play" tab. Both pages mount it this way
+   * now, inside their stage row.
+   */
+  docked?: boolean;
+  /**
+   * The Play2Gether tab (docked only). The panel stays generic: the page says
+   * what goes in it and when it matters.
+   *  - `content` is rendered whenever given and only HIDDEN when another tab is
+   *    showing — the participant's panel owns the recorder and must never
+   *    unmount mid-session, the host's holds the mixer's state.
+   *  - `active` shows the tab; turning true opens the column on it, turning
+   *    false closes it again if it was showing.
+   *  - `urgent` brings it to the front even over the chat.
+   *  - `attention` pulses the closed strip.
+   *  - `wide` widens the column while the tab is showing (the host's mixer).
+   */
+  play?: {
+    content: React.ReactNode;
+    active: boolean;
+    urgent?: boolean;
+    attention?: boolean;
+    wide?: boolean;
+  };
 }) {
   const room = useRoomContext();
   const { localParticipant } = useLocalParticipant();
@@ -139,6 +170,27 @@ export default function ParticipantControlPanel({
   const [input, setInput] = useState("");
   const [prevMsgCount, setPrevMsgCount] = useState(0);
   const [chatToasts, setChatToasts] = useState<ChatToast[]>([]);
+
+  // The Play tab, docked panel only: show it, jump to it when there is
+  // something to act on in seconds, and let it go when it ends.
+  const p2g = {
+    active: !!(docked && play?.active),
+    urgent: !!(docked && play?.urgent),
+    attention: !!(docked && play?.attention),
+  };
+  const p2gWasActive = useRef(false);
+  useEffect(() => {
+    if (!docked) return;
+    if (p2g.active && !p2gWasActive.current) openPanel("p2g");
+    if (!p2g.active && p2gWasActive.current && tab === "p2g") {
+      setTab("chat");
+      closePanel();
+    }
+    p2gWasActive.current = p2g.active;
+  }, [docked, p2g.active]); // eslint-disable-line
+  useEffect(() => {
+    if (docked && p2g.urgent) openPanel("p2g");
+  }, [docked, p2g.urgent]); // eslint-disable-line
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -207,7 +259,8 @@ export default function ParticipantControlPanel({
 
   const totalOnline = remotes.length + 1;
 
-  const TABS = ALL_TABS.filter((t) => !t.hostOnly || role === "host");
+  const TABS = ALL_TABS.filter((t) =>
+    (!t.hostOnly || role === "host") && (!t.p2gOnly || p2g.active));
 
   return (
     <>
@@ -239,7 +292,7 @@ export default function ParticipantControlPanel({
         <ToastLane order={LANE_ORDER.chat}>
           <div
             className={`flex flex-col gap-2 pointer-events-none w-full items-end
-                        ${open ? "hidden sm:flex sm:mr-[17rem]" : ""}`}
+                        ${open ? `hidden sm:flex ${docked ? "sm:mr-[21rem]" : "sm:mr-[17rem]"}` : ""}`}
           >
           {chatToasts.map((toast) => (
             <button
@@ -276,16 +329,35 @@ export default function ParticipantControlPanel({
         </ToastLane>
       )}
 
-      {/* Toggle tab — always visible, including over JoinSetup */}
+      {/* Docked and closed, sm+: a thin strip in the layout, so the way back
+          in never sits on top of the stage. It pulses while Play2Gether has
+          something happening on a tab the participant has hidden. */}
+      {docked && !open && (
+        <aside className="hidden sm:flex w-10 shrink-0 flex-col border-l border-white/10 bg-zinc-950">
+          <button
+            onClick={() => openPanel(p2g.active ? "p2g" : undefined)}
+            title="Open panel"
+            className="flex flex-col items-center gap-3 py-4 text-zinc-300 hover:bg-white/5 transition-colors"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            {p2g.active && (
+              <Music2 className={`w-4 h-4 ${p2g.attention ? "text-rose-400 animate-pulse" : "text-teal-400"}`} />
+            )}
+          </button>
+        </aside>
+      )}
+
+      {/* Toggle tab — always visible, including over JoinSetup. Docked, it is
+          the phone-only way in (the strip above covers sm+). */}
       {!open && (
         <button
-          onClick={() => setOpen(true)}
-          className="fixed right-0 top-1/2 -translate-y-1/2 z-[100001]
+          onClick={() => openPanel(docked && p2g.active ? "p2g" : undefined)}
+          className={`${docked ? "sm:hidden " : ""}fixed right-0 top-1/2 -translate-y-1/2 z-[100001]
                      flex flex-col items-center justify-center gap-1
                      w-11 h-24 sm:w-8 sm:h-20 rounded-l-xl
                      bg-zinc-800/90 hover:bg-zinc-700 backdrop-blur-sm
                      border border-white/10 border-r-0
-                     text-white transition-colors"
+                     text-white transition-colors`}
           title="Open panel"
         >
           {/* Wider under `sm`: 32px is below any usable touch target, and this
@@ -296,11 +368,20 @@ export default function ParticipantControlPanel({
         </button>
       )}
 
-      {/* Side panel */}
-      {open && (
-        <div className="ctrl-panel-in fixed right-0 top-0 h-full w-72 max-w-[85vw] z-[100000]
-                        flex flex-col pb-safe bg-zinc-900/96 backdrop-blur-xl
-                        border-l border-white/10 shadow-2xl">
+      {/* Side panel.
+          Overlay (host): fixed over the right edge, as it always was.
+          Docked (participant): a column in the stage row, so opening it
+          resizes the stage instead of covering it — on phones a band under
+          the stage. Docked, it stays MOUNTED while closed (just hidden): the
+          Play2Gether tab inside owns the recorder and must not unmount. */}
+      {(open || docked) && (
+        <div className={docked
+          ? `${open ? "flex" : "hidden"} shrink-0 flex-col min-h-0 w-full
+             ${play?.wide && tab === "p2g" ? "sm:w-[26.25rem]" : "sm:w-80"}
+             max-h-[50%] sm:max-h-none border-t sm:border-t-0 sm:border-l border-white/10 bg-zinc-950`
+          : `ctrl-panel-in fixed right-0 top-0 h-full w-72 max-w-[85vw] z-[100000]
+             flex flex-col pb-safe bg-zinc-900/96 backdrop-blur-xl
+             border-l border-white/10 shadow-2xl`}>
 
           {/* Header */}
           <div className="flex items-center justify-between px-3 py-2 border-b border-white/10 shrink-0">
@@ -403,6 +484,17 @@ export default function ParticipantControlPanel({
                   {isSending ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* ── PLAY2GETHER TAB (docked only) ──
+              Always rendered while docked, hidden unless selected: see the
+              panel's own note — it must never unmount mid-session. */}
+          {docked && play?.content && (
+            <div className={tab === "p2g" && p2g.active
+              ? "flex flex-col flex-1 min-h-0 overflow-y-auto"
+              : "hidden"}>
+              {play.content}
             </div>
           )}
 

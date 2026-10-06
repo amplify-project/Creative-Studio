@@ -35,6 +35,9 @@ server/server.yaml
 # TLS material and LiveKit keys are per deployment, not source.
 certs/
 server/nginx/certs/
+# Let's Encrypt state, written by the certbot container: holds the live
+# private key. Never source.
+server/certbot/
 server/livekit.key
 server/livekit.crt
 
@@ -63,7 +66,7 @@ CLAUDE.md
 
 # Third-party ONNX weights, 97 MB, fetched by scripts/fetch-models.sh. They are
 # YAMNet (Google, Apache-2.0) and the Descript Audio Codec encoder (MIT); they
-# are not ours to redistribute inside a BSD-2 source tree, and dac_encoder.onnx
+# are not ours to redistribute inside a GPLv3 source tree, and dac_encoder.onnx
 # alone is over GitHub's 50 MB warning. The two in-house MLPs next to them stay
 # tracked: nothing public can reproduce those.
 /server/agents/assistantHost/audioAnalysis/yamnet_model.onnx

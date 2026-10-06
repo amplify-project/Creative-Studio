@@ -104,6 +104,7 @@ Presets live in `audioSelector.tsx` (`AUDIO_MODE_PRESETS`). What differs:
 | | music | speech |
 |---|---|---|
 | `echoCancellation` / `noiseSuppression` / `voiceIsolation` | off (raw fidelity) | on |
+| `autoGainControl` | off (would pump the dynamics) | on (lifts quiet laptop mics — without it speakers reported "too quiet") |
 | **capture** = getUserMedia constraints | — | — |
 | `dtx` / `red` / `audioPreset` = **publish-time** opts | set at `publishTrack` | set at `publishTrack` |
 
@@ -114,8 +115,21 @@ without renegotiating** (= unpublish + republish).
 
 ### develop behaviour (current mainline)
 
-On an `audioMode` change, the effect does `unpublish → createLocalAudioTrack →
-publishTrack` with the new preset. This is now **wrapped in `runAudioOp`** so it
+**Which mode the live mic is in is read from the track itself**
+(`captureModeOf` in `app/utils/micCapture.ts`: the *requested*
+`echoCancellation` in `LocalTrack.constraints`). `reconcileAudioMode` compares
+that with the room's mode on every mode change AND on every new mic track
+(JoinSetup, autoPublish, a re-capture). It used to compare the previous prop
+with the new one, which missed every mic published before the mode was known:
+a refreshed host (autoPublish runs a 1.5 s-old closure built before shared
+state arrived) or a participant whose JoinSetup ran early stayed in speech in
+a music room. Never read the mode from `getSettings()` — iOS reports
+echoCancellation=true in music and the reconcile would loop (it is also
+capped at two re-captures per target mode). A capture saved from the settings
+panel is the user's own choice and only an explicit mode change overrides it.
+
+On a mismatch it does `unpublish → createLocalAudioTrack → publishTrack` with
+the new preset. This is now **wrapped in `runAudioOp`** so it
 can't race, but it still tears the publication down and back up. Cost: on iPad
 each re-capture restarts the OS audio pipeline, which can bring the track back at
 a low level (the "mic went quiet" symptom) and briefly churns SFU subscriptions.
@@ -138,6 +152,69 @@ Tradeoffs: speech now rides the music bitrate (tune per-mode live via
 `dtx` is off for both (music needs it off; speech only pays a little idle
 bandwidth). `restartTrack` still does a getUserMedia, so the iPad "quiet on
 re-capture" can still occur — but without the racing/duplication.
+
+### Mute still unpublishes (muting in place: considered, not done)
+
+The mic button still mutes by **unpublishing**, so every unmute is a fresh
+getUserMedia + publish: slow on iOS (first words lost), the OS audio pipeline
+restarts (a candidate for the "came back quiet" report), listeners
+re-subscribe. `track.mute()` / `unmute()` would avoid all of that (LiveKit 2.15
+keeps the capture open on mute), and was written on feature/improve_audio, then
+taken out as too wide a behaviour change for now: code across the app reads
+"muted = no mic publication". If it is ever done, at least:
+
+- anything that records `pub.track.mediaStreamTrack` must check `isMuted`, or
+  it records silence — the P2G round recorder (`usePlay2GetherSession`) and the
+  host's reference capture (`Play2GetherHostPanel`);
+- the mic button needs a third state (published + muted);
+- the re-capture paths must re-mute the new track (a muted track publishes
+  muted via AddTrackRequest.muted);
+- the browser's mic indicator stays on while muted.
+
+Note `HostContent`'s comment that "a primary participant keeps their audio
+publication even when muted" is NOT true today: camera off + muted = zero
+publications.
+
+### Channels
+
+Speech captures **mono** (echo cancellation processes mono anyway; the preset
+said "mono" but asked for 2). Music captures **stereo**, but a stereo capture
+with one dead side — a USB interface with the mic in input 1 — put that person
+in one ear. `watchForDeadChannel` listens to a stereo music capture until there
+is sound: one side ~30 dB under the other for 1.5 s → the device id is stored
+in `amplify.monoInputs` and re-captured mono; both sides active → real stereo,
+left alone. `captureFor(mode, deviceId)` is the one builder every publish path
+uses (MediaControls, JoinSetup, the retry modal).
+
+### Telemetry
+
+Every new mic track sends a `mic_capture` beacon to `/api/connection-log`:
+`why` (unmute / settings / mode:… / dead-channel / retry / publish),
+`roomMode`, and `micSnapshot()` = requested vs effective EC/NS/AGC/
+voiceIsolation/channels. Bug reports carry `captureMode` + `requested` next to
+the effective settings. Use these before calling a "music cuts out" report a
+network problem: echo cancellation forced on (iOS) produces exactly that, and
+we tested that EC alone breaks music even with NS/AGC off.
+
+### "It got quieter when we changed mode"
+
+Expected physics, not a bug: speech has AGC on, music has it off, so a mic
+AGC was lifting arrives at its own level after the switch. On desktop Chrome
+the AGC can also move the **OS input slider** (seen on Linux/PulseAudio; Chrome
+does the same on Windows/macOS), which then stays low for the AGC-less music
+capture. Only the user's input gain fixes it, so the app measures and points:
+
+- `MicLevelMonitor` (`app/utils/micLevelMonitor.ts`) follows the live mic:
+  p75 RMS of 100 ms frames above -50 dBFS (silence/mute say nothing).
+- `reconcileAudioMode` stores the level before a switch; after 8 s of sound
+  on the new track MediaControls logs `mic_level_after_mode` (from, to,
+  beforeDb, afterDb, dropDb, quiet). Quiet in music (< -36 dBFS, or ≥ 10 dB
+  down and < -28) offers `audio.calibrateMic` / `low_level` — the same panel,
+  skill and dedup key (`audio-cal:low_level:<id>`) the server analyser uses.
+  Thresholds are first guesses; tune them from the beacons.
+- Local code offers skills through `useSuggestions().offer(msg)`: the same
+  message shape and gates (skill, role, personal) as the data topic.
+- The panel's low_level text adds where the input slider lives per OS.
 
 ## 4. The iOS/WebKit constraint caveat
 
@@ -169,6 +246,55 @@ applied) next to what we requested. Compare a **desktop Chrome** baseline (shoul
 show `echoCancellation: false` in music) against the iPad (likely `true`) to
 prove whether a mismatch is iOS or our code. Behaviour varies by iOS version, so
 note it when testing.
+
+## 5. Chosen devices: the mic survives re-captures, the app's own sound follows the speaker
+
+Field reports 2026-09-28 (Mac, Chrome, EarPods chosen at join, system default
+output = laptop speakers): "the audio switches to the in-built when Play2Gether
+is used", "the recording comes through the internal speakers", "adjusting the
+volume does not work". Two separate causes, both "the device the user picked
+was forgotten":
+
+- **Input.** `MediaControls` started with `deviceId: "default"` and never
+  learned what JoinSetup published with, so every re-capture — the
+  music/speech switch (`audioMode` effect), unmute (`toggleAudio`) — moved
+  the user back to the OS default mic. Now JoinSetup persists the pick
+  (`amplify.inputDeviceId`), and the re-capture ops take the device of the
+  **live** mic (`resolveMicDeviceId`: room first, same rule as §1), falling
+  back to the stored pick. **A live `"default"` is not a pick**, though: it is
+  what the host's autoPublish gets before any panel, and what LiveKit
+  restarts a published mic on when it ends. Reusing it made every later
+  music/speech switch ignore the mic chosen afterwards (2026-10-02), so a live
+  "default" yields to a stored explicit pick. Re-captures also **await** the
+  unpublish before opening the new capture (`unpublishAllMics`), so the old
+  track is never still published when it ends — LiveKit's
+  `handleTrackEnded` would otherwise restart it with `deviceId: 'default'`.
+  `mic_capture` beacons carry `device.requested` / `device.opened`.
+- **Output.** LiveKit's audio follows `switchActiveDevice` +
+  `participant.setVolume`; nothing the app plays itself did. The Play2Gether
+  reference, metronome, clap, result, the host mixer preview and UI chimes
+  all went to the system default at full scale. `app/utils/outputBus.ts` is
+  the one place that knows the speaker and volume: elements call
+  `routeElement(el)`, contexts connect to `outputNode(ctx)` instead of
+  `ctx.destination` (a master gain + `AudioContext.setSinkId`). Changes
+  broadcast live. **Any new sound the app plays must use one of the two.**
+  The acoustic calibration uses `routeContextDeviceOnly` — right device, no
+  volume, so it measures the path the player actually hears.
+
+The bus also owns temporary **holds on the room's audio**
+(`holdRemoteAudio(factor)`): calibration rounds hold it at 0, result playback
+ducks it to 0.15 (every room mic hears the mix off its own speakers and sends it
+back — "artefacts in the headphones"). `useOutputVolume` applies
+`volume × min(holds)` on every subscription; do not call
+`participant.setVolume` directly any more — the hook overwrites it on the next
+`TrackSubscribed`, which is how the old calibration silence got undone.
+
+Speaker and volume are still chosen only on the pre-join screen. An in-session
+control was tried and dropped: once everything follows the chosen device, the
+OS volume keys work, and a second knob on top of them is one more way to end up
+unable to hear. `setOutputVolume` / `setOutputDevice` are there if one is ever
+wanted. Bug reports carry `output` (speaker, volume, room hold), and the active
+mic label is looked up by kind + id (`"default"` exists in every kind).
 
 ## Verification status
 

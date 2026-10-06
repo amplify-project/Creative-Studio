@@ -13,7 +13,6 @@ import { ToastLaneProvider } from "../../components/ui/ToastLane";
 import { ControlPanelProvider } from "../../components/ui/ControlPanelContext";
 import { ReactionsProvider } from "../../components/ui/ReactionsContext";
 import { useSession } from "next-auth/react";
-import ParticipantControlPanel from "../../components/ParticipantControlPanel";
 import { WifiOff, Loader2 } from "lucide-react";
 import { makeConnLogger, logQualityChange, netInfo, type QualityTracker } from "../lib/connLog";
 
@@ -463,8 +462,9 @@ if (!token)
                 here; without this provider it renders no button at all. */}
             <ReactionsProvider>
               <AssistantSuggestionsProvider localRole="participant">
+                {/* The side panel is mounted by MainStageParticipant now, as a
+                    column in its stage row (docked) rather than an overlay. */}
                 <MainStageParticipant />
-                <ParticipantControlPanel role="participant" />
                 <AssistantSuggestionStack />
               </AssistantSuggestionsProvider>
             </ReactionsProvider>

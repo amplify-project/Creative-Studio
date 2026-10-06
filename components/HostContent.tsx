@@ -15,11 +15,14 @@ import { shallowArrEq, shallowObjEq } from "../app/utils/utils";
 import { AgentData } from "../app/utils/agentData";
 import { ChevronLeft, ChevronRight, Video, User, Music, MessageSquare, Music2, LogIn, LogOut as LogOutIcon } from "lucide-react";
 import Play2GetherHostPanel from "./Play2GetherHostPanel";
+import ParticipantControlPanel from "./ParticipantControlPanel";
+import { useControlPanel } from "./ui/ControlPanelContext";
 import { Play2GetherLyricsBanner } from "./LyricsOverlay";
 import { RoomEvent, Track } from "livekit-client";
 import type { AudioMode } from "../app/types/sharedStateTypes";
 import { useLayoutSnapshotEmitter } from "../app/hooks/useLayoutSnapshotEmitter";
 import { JsonPatchOp } from "../app/types/sharedStateTypes";
+import { useOutputVolume } from "../app/hooks/useOutputVolume";
 
 interface RoomNotification {
   id: string;
@@ -29,6 +32,12 @@ interface RoomNotification {
 
 export default function HostContent({ room }: { room: any }) {
   const tracksByUser = useTracksByUser();
+  const panel = useControlPanel();
+  // The host has no pre-join screen, but still gets the in-session speaker
+  // control, and the room holds (calibration silence, result-playback duck)
+  // are applied through this — the Play2Gether hook no longer touches
+  // participant volumes directly.
+  useOutputVolume(room);
   const [zoomedTrackSids, setZoomedTrackSids] = useState<Set<string>>(new Set());
   const [mainStageVideos, setMainStageVideos] = useState<DisplayVideo[]>([]);
   const [customPositions, setCustomPositions] = useState<Record<string, Position>>({});
@@ -851,7 +860,12 @@ export default function HostContent({ room }: { room: any }) {
 
           {/* Play2Gether */}
           <button
-            onClick={() => setShowP2G((v) => !v)}
+            onClick={() => {
+              // Open → bring the tab to the front if the column is hidden or
+              // on another tab; only a click while it is already showing closes.
+              if (showP2G && !(panel.open && panel.tab === "p2g")) panel.openPanel("p2g");
+              else setShowP2G((v) => !v);
+            }}
             className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg font-medium text-sm transition-colors mb-2 ${
               showP2G ? "bg-indigo-700 hover:bg-indigo-600" : "bg-zinc-700 hover:bg-zinc-600"
             }`}
@@ -960,12 +974,27 @@ export default function HostContent({ room }: { room: any }) {
           room={room}
           autoPublish={true}
           audioMode={currentAudioMode}
+          telemetryRole="host"
           variant="bar"
         />
       </div>
 
-      {/* Play2Gether host panel */}
-      {showP2G && <Play2GetherHostPanel onClose={() => setShowP2G(false)} />}
+      {/* Side column: chat, files, audio, utils — and the Play2Gether mixer
+          as its "Play" tab while it is open. Docked like the participant's:
+          the stage is resized around it instead of the mixer floating over the
+          videos the host is there to watch. The mixer is mounted while open
+          whichever tab is showing, so switching to the chat keeps its state. */}
+      <ParticipantControlPanel
+        role="host"
+        docked
+        play={{
+          content: showP2G
+            ? <Play2GetherHostPanel embedded onClose={() => setShowP2G(false)} />
+            : null,
+          active: showP2G,
+          wide: true,
+        }}
+      />
 
       {/* ── Join / leave notification toasts ── */}
       <div className="fixed top-16 right-4 z-[99990] flex flex-col gap-2 pointer-events-none">

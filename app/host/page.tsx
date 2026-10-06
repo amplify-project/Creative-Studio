@@ -12,8 +12,8 @@ import AssistantSuggestionStack from "../../components/AssistantSuggestionStack"
 import { ToastLaneProvider } from "../../components/ui/ToastLane";
 import { ControlPanelProvider } from "../../components/ui/ControlPanelContext";
 import { ReactionsProvider } from "../../components/ui/ReactionsContext";
+import { MicIssuesProvider } from "../../components/ui/MicIssuesContext";
 import { useSession } from "next-auth/react";
-import ParticipantControlPanel from "../../components/ParticipantControlPanel";
 import { WifiOff, Loader2 } from "lucide-react";
 import { makeConnLogger, logQualityChange, netInfo, type QualityTracker } from "../lib/connLog";
 
@@ -370,8 +370,13 @@ export default function HostPage() {
                 here; without this provider it renders no button at all. */}
             <ReactionsProvider>
               <AssistantSuggestionsProvider localRole="host">
-                <HostContent room={roomInstance} />
-                <ParticipantControlPanel role="host" />
+                {/* The side panel is mounted by HostContent, docked in its
+                    layout row (it also carries the Play2Gether mixer tab). */}
+                {/* Colours the mic meters red while the analyser hears
+                    someone clipping. Host only, so it lives here. */}
+                <MicIssuesProvider>
+                  <HostContent room={roomInstance} />
+                </MicIssuesProvider>
                 <AssistantSuggestionStack />
               </AssistantSuggestionsProvider>
             </ReactionsProvider>

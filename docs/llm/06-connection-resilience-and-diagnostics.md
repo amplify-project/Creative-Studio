@@ -97,8 +97,7 @@ the publisher PC's `media-source` stat (kind=audio) into
 
 Why: sustained `audioLevel ≈ 0` on a published, unmuted track is the
 diagnostic signature of "wrong mic selected" — the
-`Microsoft Teams Audio` virtual driver, OS gain at 0, AGC clamping
-hard. Past reports had `packetsSent` climbing without participants
+`Microsoft Teams Audio` virtual driver, OS gain at 0. Past reports had `packetsSent` climbing without participants
 being able to hear; this stat would have caught them in seconds.
 
 Admin detail surfaces it as a red **"silent — wrong mic?"** badge
@@ -131,9 +130,13 @@ constraints actually negotiated (`echoCancellation`,
 
 Admin detail flags virtual devices via a label regex
 (`microsoft teams|zoom|discord|loopback|blackhole|soundflower|virtual|krisp|vb-audio`)
-with a red "virtual — likely silent" badge, and amber-flags
-`autoGainControl=true` because AGC clamping is the second most common
-"very quiet" cause.
+with a red "virtual — likely silent" badge. It used to amber-flag
+`autoGainControl=true` as a "very quiet" cause; that was backwards — AGC
+raises quiet speech, and it was the *absence* of AGC that left laptop mics
+quiet. Speech mode now requests AGC on and music off (doc 08 §3), and the
+report doesn't record the mode, so no AGC value is flagged. A quiet report
+with `autoGainControl=false` in speech mode means the browser ignored the
+request.
 
 ## 3. Audio subscription watchdog
 

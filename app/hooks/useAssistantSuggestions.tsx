@@ -65,6 +65,11 @@ type SuggestionAPI = {
   }) => void;
   dismiss: (id: string) => void;
   accept: (id: string) => Promise<void>;
+  /** Offer a skill from code running in this browser, in the same message
+   *  shape an assistant sends on the data topic and through the same gates
+   *  (known skill, role, personal-target). The bus does not learn who is
+   *  offering or why — a local detector is just another source. */
+  offer: (msg: SuggestionMessage) => void;
 };
 
 const Ctx = createContext<SuggestionAPI | null>(null);
@@ -73,6 +78,12 @@ export function useSuggestions(): SuggestionAPI {
   const v = useContext(Ctx);
   if (!v) throw new Error("useSuggestions outside AssistantSuggestionsProvider");
   return v;
+}
+
+/** Same as useSuggestions, but null outside the provider (for components
+ *  that also render where there is no assistant bus). */
+export function useSuggestionsOrNull(): SuggestionAPI | null {
+  return useContext(Ctx);
 }
 
 export function AssistantSuggestionsProvider({
@@ -222,6 +233,51 @@ export function AssistantSuggestionsProvider({
     setSuggestions((q) => q.map((s) => ({ ...s, createdAt: Date.now() })));
   }, []);
 
+  // ── One gate for every offer: assistant on the data topic or local code ──
+  const offer = useCallback((msg: SuggestionMessage) => {
+    if (!msg?.invoke?.skill || !msg.title || !msg.source) {
+      console.warn("[suggestion] missing required fields:", msg);
+      return;
+    }
+    const skill = findSkill(msg.invoke.skill);
+    if (!skill) {
+      console.warn(
+        `[suggestion] unknown skill "${msg.invoke.skill}" — ignoring`,
+      );
+      return;
+    }
+    // Role gate — only show suggestions for skills our role can invoke.
+    if (!skill.roles.includes(localRole)) {
+      return;
+    }
+    // Personal gate — a suggestion about someone's own mic must not render
+    // on anyone else's screen. Agents target the transport too, so this only
+    // fires if one broadcasts by mistake; failing closed on a missing
+    // participantId is the safe direction.
+    if (skill.personal) {
+      const target = (msg.invoke.args as any)?.participantId;
+      if (!target || target !== room?.localParticipant?.identity) {
+        return;
+      }
+    }
+    push({
+      source: msg.source,
+      title: msg.title,
+      description: msg.description,
+      severity: msg.severity,
+      ttlMs: msg.ttlMs,
+      dedupKey: msg.dedupKey,
+      skill: skill.name,
+      apply: () =>
+        Promise.resolve(
+          skill.handler(
+            { shared, room, localRole, ui: skillUi },
+            msg.invoke.args as any,
+          ),
+        ),
+    });
+  }, [room, localRole, push, shared, skillUi]);
+
   // ── Listener: assistants/suggestions topic ──────────────────────────
   useEffect(() => {
     if (!room) return;
@@ -239,53 +295,13 @@ export function AssistantSuggestionsProvider({
         console.warn("[suggestion] malformed payload:", e);
         return;
       }
-      if (!msg?.invoke?.skill || !msg.title || !msg.source) {
-        console.warn("[suggestion] missing required fields:", msg);
-        return;
-      }
-      const skill = findSkill(msg.invoke.skill);
-      if (!skill) {
-        console.warn(
-          `[suggestion] unknown skill "${msg.invoke.skill}" — ignoring`,
-        );
-        return;
-      }
-      // Role gate — only show suggestions for skills our role can invoke.
-      if (!skill.roles.includes(localRole)) {
-        return;
-      }
-      // Personal gate — a suggestion about someone's own mic must not render
-      // on anyone else's screen. Agents target the transport too, so this only
-      // fires if one broadcasts by mistake; failing closed on a missing
-      // participantId is the safe direction.
-      if (skill.personal) {
-        const target = (msg.invoke.args as any)?.participantId;
-        if (!target || target !== room.localParticipant?.identity) {
-          return;
-        }
-      }
-      push({
-        source: msg.source,
-        title: msg.title,
-        description: msg.description,
-        severity: msg.severity,
-        ttlMs: msg.ttlMs,
-        dedupKey: msg.dedupKey,
-        skill: skill.name,
-        apply: () =>
-          Promise.resolve(
-            skill.handler(
-              { shared, room, localRole, ui: skillUi },
-              msg.invoke.args as any,
-            ),
-          ),
-      });
+      offer(msg);
     };
     room.on("dataReceived", onData);
     return () => {
       room.off("dataReceived", onData);
     };
-  }, [room, localRole, push, shared, skillUi]);
+  }, [room, offer]);
 
   // ── Manifest publish: write state.skills once we have shared state ──
   // Only the host writes (shared-state-agent enforces role server-side),
@@ -321,8 +337,8 @@ export function AssistantSuggestionsProvider({
   // running underneath, so anything still relevant is there afterwards and
   // anything stale has expired on its own ttl.
   const api = useMemo<SuggestionAPI>(
-    () => ({ suggestions: micCalIssue ? [] : suggestions, push, dismiss, accept }),
-    [suggestions, micCalIssue, push, dismiss, accept],
+    () => ({ suggestions: micCalIssue ? [] : suggestions, push, dismiss, accept, offer }),
+    [suggestions, micCalIssue, push, dismiss, accept, offer],
   );
 
   return (

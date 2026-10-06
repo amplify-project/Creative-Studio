@@ -21,10 +21,14 @@ or `Play2GetherClientPanel` (instead of inside them), you spawn a second
 `usePlay2GetherSession` hook instance. Both arm `MediaRecorder` on the
 same mic when the user is the recording target → duplicate uploads.
 
-Current state: banner IS rendered separately (HostContent.tsx). The
-duplicate-upload symptom was fixed via `uploadedClapAtRef` per-round
-idempotency. A future cleanup would render the banner inline from inside
-the panels (single hook instance) — track in CLAUDE.md if attempted.
+Current state: the banner calls `usePlay2GetherSession({ capture: false })`,
+which skips the recorder/upload/metronome machinery, so it is safe to render
+anywhere — rendering it *inside* a panel was never a single hook instance
+anyway. It is rendered separately on both sides: HostContent.tsx, and
+MainStageParticipant.tsx (inside the stage, since the participant panel became
+a column beside it, 2026-09-29). The rule that still holds: any OTHER new
+caller of the hook must pass `{ capture: false }` unless it is the panel.
+Per-round idempotency (`uploadedClapAtRef`) remains the backstop.
 
 ### Don't replace AudioWorklet with MediaRecorder for takes
 

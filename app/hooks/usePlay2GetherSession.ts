@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRoomContext } from "@livekit/components-react";
 import { Track, type Room } from "livekit-client";
 import { useSharedStateContext } from "./useSharedState";
+import { holdRemoteAudio, outputNode, routeElement, unrouteElement } from "../utils/outputBus";
 import { p2gLog, withNet, median, type ClockStats } from "../lib/p2gTelemetry";
 import { SYNC_BPM, SYNC_JITTER_MS, syncBeatMs, syncRoundDurationSec } from "../lib/p2gSync";
 // The acoustic measurement itself. Imported from the component module because
@@ -525,23 +526,11 @@ const CALIB_ROUND_JOIN_WINDOW_MS = 4000;
  * `runAudioOp` in MediaControls for reasons that cost a field session to learn
  * (see CLAUDE.md), and a measurement has no business reaching into it.
  */
-function silenceRemoteAudio(room: Room | null | undefined): () => void {
-  const restore: Array<() => void> = [];
-  try {
-    room?.remoteParticipants.forEach((p) => {
-      try {
-        const before = p.getVolume() ?? 1;
-        p.setVolume(0);
-        restore.push(() => { try { p.setVolume(before); } catch { /* gone */ } });
-      } catch { /* one participant failing must not skip the rest */ }
-    });
-  } catch { /* no room, or an older client library — measure anyway */ }
-  let done = false;
-  return () => {
-    if (done) return;        // idempotent: called from both then and catch
-    done = true;
-    restore.forEach((f) => f());
-  };
+function silenceRemoteAudio(_room: Room | null | undefined): () => void {
+  // A hold on the output bus rather than `participant.setVolume(0)` directly:
+  // the volume hook re-applies the listener's volume on every TrackSubscribed,
+  // so a direct write was undone by the first republish during the round.
+  return holdRemoteAudio(0);
 }
 
 /**
@@ -703,7 +692,7 @@ function acquireRefPlayer(
     analyser.smoothingTimeConstant = 0.8;
     const elSource = ctx.createMediaElementSource(el);
     elSource.connect(analyser);
-    elSource.connect(ctx.destination);
+    elSource.connect(outputNode(ctx));
 
     const player: P2GRefPlayer = {
       url, ctx, analyser, el, elSource,
@@ -818,7 +807,7 @@ function scheduleReference(clapAt: number, localClapAt: number, durationSec: num
     const src = p.ctx.createBufferSource();
     src.buffer = p.buffer;
     src.connect(p.analyser);
-    src.connect(p.ctx.destination);
+    src.connect(outputNode(p.ctx));
     // A late joiner starts mid-buffer rather than from the top, so their
     // reference is at the same place in the song as everyone else's.
     const offsetIntoBuffer = Math.max(0, sinceClapSec);
@@ -923,13 +912,39 @@ function referenceOutputLatencyMs(): number {
 // with the tab.
 let resultAudio: { url: string; el: HTMLAudioElement } | null = null;
 
+/**
+ * How loud the room stays while the finished mix plays.
+ *
+ * The mix plays on every client at once, and every room mic hears it off its
+ * own speakers and sends it back — delayed, through Opus, half-eaten by echo
+ * cancellation (or not at all in music mode). Each listener got a clean copy
+ * plus N smeared ones; field report 2026-09-28 called it "audio artefacts in
+ * the headphones". Ducked rather than silenced so people can still be heard
+ * talking over the playback.
+ */
+const RESULT_PLAYBACK_ROOM_DUCK = 0.15;
+
 function getResultAudio(url: string): HTMLAudioElement | null {
   if (typeof window === "undefined") return null;
   if (resultAudio && resultAudio.url !== url) {
     resultAudio.el.pause();
+    unrouteElement(resultAudio.el);
     resultAudio = null;
   }
-  if (!resultAudio) resultAudio = { url, el: new Audio(url) };
+  if (!resultAudio) {
+    const el = new Audio(url);
+    routeElement(el);
+    // Duck on the element's own events rather than on `playResult`: they are
+    // what is actually audible, and they cover the mix simply ending.
+    let release: (() => void) | null = null;
+    const duck = () => { if (!release) release = holdRemoteAudio(RESULT_PLAYBACK_ROOM_DUCK); };
+    const unduck = () => { release?.(); release = null; };
+    el.addEventListener("playing", duck);
+    el.addEventListener("pause", unduck);
+    el.addEventListener("ended", unduck);
+    el.addEventListener("emptied", unduck);
+    resultAudio = { url, el };
+  }
   return resultAudio.el;
 }
 
@@ -1195,6 +1210,17 @@ export function usePlay2GetherSession(
 
   const playbackLatencyMsRef = useRef<number>(0);
   const captureSampleRateRef = useRef<number>(48000);
+  /** Which round the samples in `chunksRef` belong to. See the prewarm: a
+   *  round whose recorder never armed used to upload the PREVIOUS round's
+   *  take, because nothing cleared the chunks in between. */
+  const chunksClapAtRef = useRef<number | null>(null);
+  /** Clock readings for the take, so `p2g_take` can say WHY a take came out
+   *  short: the recorder context's clock vs the wall clock across the take. */
+  const takeClockRef = useRef<{
+    ctxStart: number; wallStart: number; ctxEnd: number | null; wallEnd: number | null;
+  } | null>(null);
+  /** What the mic itself reports, next to the rate the context actually ran at. */
+  const trackSampleRateRef = useRef<number | null>(null);
   const [calibratedLatencyMs, setCalibratedLatencyMs] = useState<number | null>(() => {
     if (typeof window === "undefined") return null;
     const stored = window.localStorage.getItem(CALIBRATED_LATENCY_KEY);
@@ -1272,6 +1298,16 @@ export function usePlay2GetherSession(
     // wrong from here IS a failure worth reporting.
     roundJoinedRef.current = clapAt;
     prewarmingRef.current = true;
+    // Drop the last round's samples NOW, before waiting for the mic. They used
+    // to be cleared only once a recorder armed — so a round in which it never
+    // did (no mic published: muted, mid-republish) reached the upload with the
+    // previous take still in memory and sent THAT as this round's take. Field
+    // session 2026-09-28: two players' "takes" were byte-identical to their
+    // previous round's, one 45 s long in a 203 s round, one 203 s long in a
+    // 118 s round. With the buffer empty the upload reports "no audio" instead.
+    chunksRef.current = [];
+    chunksClapAtRef.current = null;
+    takeClockRef.current = null;
 
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1288,7 +1324,20 @@ export function usePlay2GetherSession(
     };
 
     const arm = async (rawTrack: MediaStreamTrack) => {
-      const recCtx = new AudioContext();
+      // Pinned to 48 kHz instead of the output device's native rate. On
+      // 2026-09-28 one player's context ran at 96 kHz and lost 13–26 % of its
+      // render quanta in every round (39.1 s of a 45 s take, 149 s of 203 s):
+      // the worklet writes one block per render callback, so every callback
+      // the audio thread missed is audio cut out of the take, and everything
+      // after it lands early — "in sync at the start, then shorter". 48 kHz is
+      // half the work, and what the server transcodes to anyway. The browser
+      // resamples the mic in; the context's own output is silence.
+      let recCtx: AudioContext;
+      try {
+        recCtx = new AudioContext({ sampleRate: 48000 });
+      } catch {
+        recCtx = new AudioContext();   // an engine that refuses explicit rates
+      }
       recCtx.resume().catch(() => {});
       try {
         await recCtx.audioWorklet.addModule("/play2gether-capture-worklet.js");
@@ -1317,7 +1366,19 @@ export function usePlay2GetherSession(
         return;
       }
 
-      const micSource = recCtx.createMediaStreamSource(new MediaStream([rawTrack]));
+      let micSource: MediaStreamAudioSourceNode;
+      try {
+        micSource = recCtx.createMediaStreamSource(new MediaStream([rawTrack]));
+      } catch (err) {
+        // Firefox refuses a mic whose rate differs from the context's. Rebuild
+        // at the default rate rather than lose the take.
+        console.warn("[play2gether/sync] 48 kHz recorder rejected the mic — using the device rate:", err);
+        recCtx.close().catch(() => {});
+        recCtx = new AudioContext();
+        recCtx.resume().catch(() => {});
+        await recCtx.audioWorklet.addModule("/play2gether-capture-worklet.js");
+        micSource = recCtx.createMediaStreamSource(new MediaStream([rawTrack]));
+      }
       const workletNode = new AudioWorkletNode(recCtx, "p2g-capture");
       micSource.connect(workletNode);
 
@@ -1330,6 +1391,8 @@ export function usePlay2GetherSession(
       captureSampleRateRef.current = recCtx.sampleRate;
 
       chunksRef.current = [];
+      chunksClapAtRef.current = clapAt;
+      trackSampleRateRef.current = rawTrack.getSettings().sampleRate ?? null;
       workletNode.port.onmessage = (e) => {
         if (e.data instanceof Float32Array) {
           chunksRef.current.push(e.data);
@@ -1450,6 +1513,11 @@ export function usePlay2GetherSession(
       const startedAt = Date.now();
       startedAtRef.current = startedAt;
       captureDelayMsRef.current = Math.max(0, Math.round(startedAt - localClapAt));
+      takeClockRef.current = {
+        ctxStart: recCtxRef.current?.currentTime ?? 0,
+        wallStart: performance.now(),
+        ctxEnd: null, wallEnd: null,
+      };
       node.port.postMessage({ cmd: "start" });
       console.log(`[play2gether/sync] capture start gated at +${startedAt - localClapAt}ms from clap (Δcap)`);
       // Not during a sync round. On speakers this burst lands in the take as a
@@ -1473,6 +1541,14 @@ export function usePlay2GetherSession(
     // tear the graph down. Reset the per-round guards so the next clapAt
     // prewarms afresh.
     node.port.postMessage({ cmd: "stop" });
+    // Read the recorder's clock before the context is closed below. Its
+    // elapsed time against the wall clock is what tells a take that lost
+    // render callbacks (context behind the wall) from one that lost samples
+    // some other way.
+    if (takeClockRef.current && recCtxRef.current) {
+      takeClockRef.current.ctxEnd = recCtxRef.current.currentTime;
+      takeClockRef.current.wallEnd = performance.now();
+    }
     node.port.onmessage = null;
     node.disconnect();
     recorderRef.current = null;
@@ -1590,7 +1666,9 @@ export function usePlay2GetherSession(
     if (!p2g.sessionId) return;
     const identity   = room?.localParticipant.identity ?? "unknown";
     const displayName = room?.localParticipant.name || identity;
-    const chunks = chunksRef.current;
+    // Belt and braces for the prewarm's clear: never upload samples recorded
+    // for a different round.
+    const chunks = chunksClapAtRef.current === p2g.clapAt ? chunksRef.current : [];
     if (chunks.length === 0) {
       // Capture produced nothing — re-uploading can't fix it, the round has to
       // be re-run. Mark it "capture" so the UI hides the useless retry button,
@@ -1640,10 +1718,23 @@ export function usePlay2GetherSession(
     const isSyncRound = p2g.roundKind === "sync";
     const monLat = monitorLatencyMs();
     const expectedMs = Math.round(roundDurationSec(p2g) * 1000);
+    // Clock of the take. `ctxElapsedMs` well under `wallElapsedMs` = the
+    // recorder's audio thread missed render callbacks (overload, a suspended or
+    // interrupted context) — every one is audio cut out of the take. Equal
+    // clocks with a large shortfall = samples lost after capture.
+    const clk = takeClockRef.current;
+    const ctxElapsedMs = clk && clk.ctxEnd != null
+      ? Math.round((clk.ctxEnd - clk.ctxStart) * 1000) : null;
+    const wallElapsedMs = clk && clk.wallEnd != null
+      ? Math.round(clk.wallEnd - clk.wallStart) : null;
     p2gLog(room, "p2g_take", withNet({
       clapAt: p2g.clapAt,
       bytes: takeBytes,
       sampleRate,
+      trackSampleRate: trackSampleRateRef.current,
+      ctxElapsedMs,
+      wallElapsedMs,
+      ctxLagMs: ctxElapsedMs != null && wallElapsedMs != null ? wallElapsedMs - ctxElapsedMs : null,
       capturedMs,
       expectedMs,
       shortfallMs: expectedMs - capturedMs,
@@ -2655,7 +2746,7 @@ export function scheduleMetronomeClick(
     gain.gain.exponentialRampToValueAtTime(peak, when + 0.001);
     gain.gain.exponentialRampToValueAtTime(0.0001, when + 0.045);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(outputNode(ctx));
     osc.start(when);
     osc.stop(when + 0.06);
     return osc;
@@ -2665,7 +2756,11 @@ export function scheduleMetronomeClick(
 
 function playClapSound(): void {
   try {
-    const ctx = new AudioContext();
+    // On the shared monitor context, like the metronome: a fresh context per
+    // clap would start on the system default output (setSinkId is async) and
+    // would be one more output latency the round knows nothing about.
+    const ctx = getMonitorCtx();
+    if (!ctx) return;
     const sampleRate = ctx.sampleRate;
     const buffer = ctx.createBuffer(1, Math.floor(sampleRate * 0.08), sampleRate);
     const data = buffer.getChannelData(0);
@@ -2677,9 +2772,9 @@ function playClapSound(): void {
     const src = ctx.createBufferSource();
     src.buffer = buffer;
     src.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(outputNode(ctx));
+    src.onended = () => { try { gain.disconnect(); } catch { /* gone */ } };
     src.start();
-    src.onended = () => ctx.close();
   } catch { /* non-critical */ }
 }
 

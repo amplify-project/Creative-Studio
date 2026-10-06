@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { Bug, X, Send, CheckCircle, AlertCircle } from "lucide-react";
+import { getOutputState, remoteAudioFactor } from "../../app/utils/outputBus";
+import { micSnapshot } from "../../app/utils/micCapture";
 
 interface BugReportDialogProps {
   onClose: () => void;
@@ -233,14 +235,17 @@ export default function BugReportDialog({ onClose, participantId, roomName }: Bu
     // device), the diagnosis is instant.
     //
     // `getSettings()` also exposes echoCancellation / noiseSuppression /
-    // autoGainControl — AGC clamping is a typical cause of "very quiet"
-    // reports, AEC of "they hear themselves echoing".
+    // autoGainControl — AGC off with a low level is the usual "very quiet"
+    // report, AEC off of "they hear themselves echoing".
     const activeInputDevices = await (async () => {
       const result: any = { microphone: null, camera: null };
       if (!room) return result;
       try {
         const allDevices = (await navigator.mediaDevices?.enumerateDevices?.()) ?? [];
-        const labelByDeviceId = new Map(allDevices.map((d) => [d.deviceId, d.label]));
+        // Keyed by kind AND id: "default" is a deviceId in every kind, so a
+        // map on the id alone let the audiooutput entry overwrite the mic's
+        // and reported a mic labelled "Default - MacBook Pro Speakers".
+        const labelOf = new Map(allDevices.map((d) => [`${d.kind}:${d.deviceId}`, d.label]));
         const lp = room.localParticipant;
         const grab = (source: "microphone" | "camera") => {
           // RoomEvent flow guarantees publications are populated before
@@ -258,13 +263,22 @@ export default function BugReportDialog({ onClose, participantId, roomName }: Bu
           if (!settings) return null;
           return {
             deviceId: settings.deviceId ? settings.deviceId.slice(0, 8) + "…" : null,
-            label: settings.deviceId ? (labelByDeviceId.get(settings.deviceId) ?? null) : null,
+            label: settings.deviceId
+              ? (labelOf.get(`${source === "microphone" ? "audioinput" : "videoinput"}:${settings.deviceId}`) ?? null)
+              : null,
             isMuted: pub?.isMuted ?? null,
+            // What we ASKED for and the mode it implies, next to what the
+            // browser applied below: iOS WebKit often keeps voice processing on
+            // in music mode, and only the pair tells that apart from our code.
+            ...(source === "microphone"
+              ? { captureMode: safe(() => micSnapshot(pub?.track).mode), requested: safe(() => micSnapshot(pub?.track).requested) }
+              : {}),
             constraints: source === "microphone"
               ? {
                   echoCancellation: settings.echoCancellation,
                   noiseSuppression: settings.noiseSuppression,
                   autoGainControl: settings.autoGainControl,
+                  voiceIsolation: (settings as any).voiceIsolation,
                   sampleRate: settings.sampleRate,
                   channelCount: settings.channelCount,
                   latency: (settings as any).latency,
@@ -296,6 +310,25 @@ export default function BugReportDialog({ onClose, participantId, roomName }: Bu
       return m ? { usedJSHeapSize: m.usedJSHeapSize, totalJSHeapSize: m.totalJSHeapSize, jsHeapSizeLimit: m.jsHeapSizeLimit } : null;
     });
 
+    // Where this client's sound is going. Without it "the audio came out of
+    // the laptop speakers" could not be told apart from a device the user
+    // picked, and the report had no record of the in-app volume at all.
+    const output = await (async () => {
+      try {
+        const s = getOutputState();
+        const all = (await navigator.mediaDevices?.enumerateDevices?.()) ?? [];
+        const chosen = s.deviceId || "default";
+        return {
+          deviceId: s.deviceId ? s.deviceId.slice(0, 8) + "…" : "default",
+          label: all.find((d) => d.kind === "audiooutput" && d.deviceId === chosen)?.label ?? null,
+          volume: Math.round(s.volume * 100) / 100,
+          roomFactor: remoteAudioFactor(),
+        };
+      } catch {
+        return null;
+      }
+    })();
+
     try {
       const res = await fetch("/api/bugs/report", {
         method: "POST",
@@ -317,6 +350,7 @@ export default function BugReportDialog({ onClose, participantId, roomName }: Bu
           permissions,        // microphone / camera permission state
           mediaDevices,       // enumerated devices (mic/cam/speaker)
           activeInputDevices, // which device is actually being captured + constraints
+          output,             // chosen speaker + in-app volume + any active room duck
           docHidden,          // was the tab visible at submit time?
           memory,             // JS heap usage (Chrome only)
           userAgent: navigator.userAgent,

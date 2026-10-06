@@ -15,9 +15,16 @@
  * rather than return null.
  */
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 import { RoomEvent } from "livekit-client";
 import type { Room } from "livekit-client";
+import {
+  getOutputState,
+  remoteAudioFactor,
+  setOutputDevice,
+  setOutputVolume,
+  subscribeOutput,
+} from "../utils/outputBus";
 
 const VOLUME_KEY = "amplify.outputVolume";
 const DEVICE_KEY = "amplify.outputDeviceId";
@@ -59,6 +66,30 @@ export function writeStoredOutputDevice(id: string): void {
   }
 }
 
+const INPUT_DEVICE_KEY = "amplify.inputDeviceId";
+
+/**
+ * The microphone chosen on the pre-join screen. Empty string = system default.
+ * Lives next to the speaker choice because it is the same kind of preference
+ * (per viewer, per device) and fails the same way when it is not persisted:
+ * every later re-capture falls back to whatever the OS calls default.
+ */
+export function readStoredInputDevice(): string {
+  try {
+    return localStorage.getItem(INPUT_DEVICE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function writeStoredInputDevice(id: string): void {
+  try {
+    localStorage.setItem(INPUT_DEVICE_KEY, id);
+  } catch {
+    /* as above */
+  }
+}
+
 /**
  * `setSinkId` is Chromium-only — Safari (desktop and iOS) has no way to pick
  * an output device, so the picker must be hidden rather than shown broken.
@@ -70,44 +101,49 @@ export function canChooseOutputDevice(): boolean {
 }
 
 /**
- * Keeps every remote participant at the stored volume. Returns a setter so an
- * in-session control can change it live; the stored value is the source of
- * truth for participants who join later.
+ * Keeps LiveKit's remote audio on the listener's output bus (app/utils/outputBus):
+ * every remote participant at `volume × holds`, and the room's audio elements
+ * on the chosen speaker. Re-applied on every subscription, because the element
+ * LiveKit's knob acts on only exists once a track is subscribed — which can be
+ * long after the participant connected, and happens again on every republish
+ * (music/speech switches republish everyone's mic).
+ *
+ * Returns setters for an in-session control; they go through the bus so the
+ * Play2Gether playback and every other app sound follow the same change.
  */
 export function useOutputVolume(room: Room | null | undefined) {
-  const volumeRef = useRef(1);
-
   const applyToAll = useCallback(() => {
     if (!room) return;
+    const v = getOutputState().volume * remoteAudioFactor();
     room.remoteParticipants.forEach((p) => {
       // One participant failing (already gone, older client) must not skip
       // the rest.
-      try { p.setVolume(volumeRef.current); } catch { /* ignore */ }
+      try { p.setVolume(v); } catch { /* ignore */ }
     });
   }, [room]);
 
-  const setVolume = useCallback((v: number) => {
-    volumeRef.current = Math.max(0, Math.min(1, v));
-    writeStoredVolume(volumeRef.current);
-    applyToAll();
-  }, [applyToAll]);
-
   useEffect(() => {
     if (!room) return;
-    volumeRef.current = readStoredVolume();
     applyToAll();
 
-    // ParticipantConnected alone is not enough: the audio element the volume
-    // applies to only exists once their track is subscribed, which is a
-    // separate event and can arrive much later on a slow link.
+    let lastDevice = getOutputState().deviceId;
+    const offBus = subscribeOutput((s) => {
+      applyToAll();
+      if (s.deviceId !== lastDevice) {
+        lastDevice = s.deviceId;
+        room.switchActiveDevice("audiooutput", s.deviceId || "default").catch(() => {});
+      }
+    });
+
     const onChanged = () => applyToAll();
     room.on(RoomEvent.ParticipantConnected, onChanged);
     room.on(RoomEvent.TrackSubscribed, onChanged);
     return () => {
+      offBus();
       room.off(RoomEvent.ParticipantConnected, onChanged);
       room.off(RoomEvent.TrackSubscribed, onChanged);
     };
   }, [room, applyToAll]);
 
-  return { setVolume };
+  return { setVolume: setOutputVolume, setDevice: setOutputDevice };
 }

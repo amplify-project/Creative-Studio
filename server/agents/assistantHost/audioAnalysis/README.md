@@ -5,8 +5,8 @@ deliberate.
 
 | File | Size | Origin | Licence | In git? |
 |---|---|---|---|---|
-| `content_mlp.onnx` | 2.6 MB | Trained for this project (PyTorch 2.12.1) | BSD-2, with this repo | **yes** |
-| `distortion_mlp.onnx` | 1.2 MB | Trained for this project (PyTorch 2.4.0) | BSD-2, with this repo | **yes** |
+| `content_mlp.onnx` | 2.6 MB | Trained for this project (PyTorch 2.12.1) | GPLv3, with this repo | **yes** |
+| `distortion_mlp.onnx` | 1.2 MB | Trained for this project (PyTorch 2.4.0) | GPLv3, with this repo | **yes** |
 | `yamnet_model.onnx` | 16 MB | Google YAMNet, converted with `tf2onnx` 1.16.1 | Apache-2.0 | no — fetched |
 | `dac_encoder.onnx` | 86 MB | Encoder half of the Descript Audio Codec, exported from PyTorch | MIT | no — fetched |
 
@@ -18,7 +18,7 @@ Get the two that are missing with:
 
 ## Why the third-party two are not in the repository
 
-They are 97 MB of someone else's weights. Shipping them inside a BSD-2 source
+They are 97 MB of someone else's weights. Shipping them inside a GPLv3 source
 tree muddles the licensing, and `dac_encoder.onnx` on its own is past GitHub's
 50 MB file warning — every clone and every fork would carry it.
 

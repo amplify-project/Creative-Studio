@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import BugReportDialog from "./ui/BugReportDialog";
 import { runPublishOp } from "../app/utils/publishQueue";
+import { readStoredInputDevice, writeStoredInputDevice } from "../app/hooks/useOutputVolume";
 import { useControlPanelOrNull } from "./ui/ControlPanelContext";
 import { useExtraSources } from "../app/hooks/useExtraSources";
 import { usePublishUrl } from "../app/hooks/usePublishUrl";
@@ -30,11 +31,35 @@ import { useReactionsOrNull } from "./ui/ReactionsContext";
 import { QRCodeSVG } from "qrcode.react";
 import MediaPublishErrorModal from "./ui/MediaPublishErrorModal";
 import { registerRoomDebug } from "../app/utils/muteDebug";
+import {
+  captureFor,
+  captureModeOf,
+  liveMicPub,
+  markMonoInput,
+  micSnapshot,
+  requestedChannelsOf,
+  watchForDeadChannel,
+} from "../app/utils/micCapture";
+import { makeConnLogger } from "../app/lib/connLog";
+import { MicLevelMonitor } from "../app/utils/micLevelMonitor";
+import { useSuggestionsOrNull } from "../app/hooks/useAssistantSuggestions";
+
+// Mode-switch level check (see the effect near reconcileAudioMode). First
+// guesses, to be tuned against the `mic_level_after_mode` beacons:
+/** Active level (p75 RMS) below this in music = quiet, whatever came before. */
+const QUIET_DB = -36;
+/** ...or it dropped at least this much from speech AND landed below DROP_FLOOR_DB. */
+const DROP_DB = 10;
+const DROP_FLOOR_DB = -28;
+/** Seconds of sound in the new mode before judging. */
+const LEVEL_CHECK_ACTIVE_S = 8;
 
 interface MediaControlsProps {
   room: any;
   autoPublish?: boolean;
   audioMode?: AudioMode;
+  /** Role stamped on the `mic_capture` telemetry beacons. */
+  telemetryRole?: "host" | "participant";
   /**
    * `"floating"` — the original overlay pinned over the video, dimmed until
    * hovered. Still what /host uses, where the page is a row (sidebar + stage)
@@ -50,6 +75,7 @@ export default function MediaControls({
   room,
   autoPublish = false,
   audioMode,
+  telemetryRole,
   variant = "floating",
 }: MediaControlsProps) {
   const isBar = variant === "bar";
@@ -64,12 +90,21 @@ export default function MediaControls({
   const mobileUrl = usePublishUrl();
   const [secondCamDevice, setSecondCamDevice] = useState("");
   const initialPreset = AUDIO_MODE_PRESETS[audioMode ?? "speech"];
+  // The room's mode, readable from inside async ops and timers. `toggleAudio`
+  // used to build its capture from the `media` of the render that created it:
+  // the host's autoPublish runs a 1.5 s-old closure, from before shared state
+  // arrived, so a refreshed host in a music room published in speech.
+  const audioModeRef = useRef<AudioMode | undefined>(audioMode);
+  audioModeRef.current = audioMode;
   const [media, setMedia] = useState({
     audio: {
       published: false,
       capture: {
-        ...initialPreset.capture,
-        deviceId: "default",
+        // The mic picked on the pre-join screen (JoinSetup persists it). This
+        // used to be a hardcoded "default", so every re-capture below — a
+        // music/speech switch, an unmute — silently moved the user back to
+        // the OS default mic (field report 2026-09-28).
+        ...captureFor(audioMode ?? "speech", readStoredInputDevice() || "default"),
       } as AudioCaptureState,
       publish: initialPreset.publish as AudioPublishState,
     },
@@ -119,6 +154,48 @@ export default function MediaControls({
   // that raced before the lock, JoinSetup + autoPublish, a reconnect…), keep
   // the most recent and unpublish the rest. The `trackPublications` Map keeps
   // insertion (= publish) order, so the last entry is the newest track.
+  /**
+   * The mic to re-capture from. The room is the source of truth, same as for
+   * everything else in these ops: if a mic is live on a SPECIFIC device, reuse
+   * it — that is the one the user is actually on, however they got there
+   * (pre-join screen, settings panel, recovery modal).
+   *
+   * A live "default" is not a choice, though. It is what a capture gets when
+   * nothing was picked yet (the host's autoPublish runs before any panel) or
+   * what LiveKit falls back to when a published mic ends. Reusing it made every
+   * later music/speech switch inherit "default" and ignore the mic the user
+   * picked afterwards (field report 2026-10-02). So a live "default" yields to
+   * a remembered explicit pick.
+   */
+  const resolveMicDeviceId = (fallback?: string): string => {
+    const stored = readStoredInputDevice();
+    if (room) {
+      const live = (Array.from(room.localParticipant.trackPublications.values()) as any[])
+        .find((p) => p.track?.kind === Track.Kind.Audio);
+      const id = live?.track?.mediaStreamTrack?.getSettings?.().deviceId;
+      if (id && id !== "default") return id;
+      if (id === "default" && !stored) return id;
+    }
+    if (fallback && fallback !== "default") return fallback;
+    return stored || "default";
+  };
+
+  /**
+   * Unpublish every local mic and WAIT for it. The old track must be off the
+   * room before the replacement capture opens: opening the same device with
+   * different processing can end the old track, and LiveKit answers an
+   * `ended` on a still-published mic by restarting it on deviceId "default"
+   * ("track ended, attempting to use a different device"). Not awaiting this
+   * left exactly that window open on every mode switch.
+   */
+  const unpublishAllMics = async () => {
+    const mics = (Array.from(room.localParticipant.trackPublications.values()) as any[])
+      .filter((p) => p.track?.kind === Track.Kind.Audio);
+    await Promise.all(
+      mics.map((p) => Promise.resolve(room.localParticipant.unpublishTrack(p.track)).catch(() => {})),
+    );
+  };
+
   const dedupeAudioTracks = () => {
     if (!room) return;
     const audioPubs = (Array.from(room.localParticipant.trackPublications.values()) as any[])
@@ -157,7 +234,33 @@ export default function MediaControls({
   // Register room with debug helpers so __lkAudio() and __muteState() are
   // available in the browser console from both participant and host views.
   useEffect(() => { if (room) registerRoomDebug(room); }, [room]);
-  const prevAudioModeRef = useRef<AudioMode | undefined>(audioMode);
+  const mediaRef = useRef(media);
+  mediaRef.current = media;
+
+  // ── mic_capture telemetry: requested vs effective, once per new mic track ──
+  const connLogRef = useRef<ReturnType<typeof makeConnLogger> | null>(null);
+  const logMicEvent = (event: string, extra: Record<string, unknown>) => {
+    const identity = room?.localParticipant?.identity;
+    if (!identity) return;
+    if (!connLogRef.current) connLogRef.current = makeConnLogger(telemetryRole ?? "participant", identity);
+    connLogRef.current(event, extra);
+  };
+  /** Why the next mic publish happens, stamped on its telemetry beacon. */
+  const pendingWhyRef = useRef<string | null>(null);
+  /** Track published from the settings panel: its capture is the user's own
+   *  choice, so only an explicit room mode change re-captures it. */
+  const manualMicSidRef = useRef<string | null>(null);
+
+  // Level of the live mic, and a pending before/after comparison across a
+  // mode switch. `armed` flips when the NEW track is attached — until then the
+  // monitor is still reading the old one.
+  const monitorRef = useRef<MicLevelMonitor | null>(null);
+  const levelCheckRef = useRef<{
+    from: AudioMode; to: AudioMode; beforeDb: number | null; startedAt: number; armed: boolean;
+  } | null>(null);
+  const suggestions = useSuggestionsOrNull();
+  const suggestionsRef = useRef(suggestions);
+  suggestionsRef.current = suggestions;
 
   /** --------------------------------------------------------------
    * 🔁 Sync published state with actual room tracks
@@ -168,7 +271,7 @@ export default function MediaControls({
 
     const syncState = () => {
       const pubs = Array.from(room.localParticipant.trackPublications.values()) as any[];
-      const hasAudio = pubs.some((p) => p.track?.kind === Track.Kind.Audio);
+      const mic = liveMicPub(room);
       // Camera only. A screen share or a second camera is a video track too,
       // and counting them here made the camera button light up for a camera
       // that was off.
@@ -177,7 +280,7 @@ export default function MediaControls({
       );
       setMedia((m) => ({
         ...m,
-        audio: { ...m.audio, published: hasAudio },
+        audio: { ...m.audio, published: !!mic?.track },
         video: { ...m.video, published: hasVideo },
       }));
     };
@@ -191,6 +294,181 @@ export default function MediaControls({
       room.off(RoomEvent.LocalTrackPublished, syncState);
       room.off(RoomEvent.LocalTrackUnpublished, syncState);
     };
+  }, [room]);
+
+  /**
+   * Replace the live mic with a fresh capture. Must run inside runAudioOp; the caller resolves the device BEFORE this unpublishes — there
+   * is no live track to read it from afterwards.
+   */
+  const recaptureMic = async (capture: AudioCaptureState, publish: AudioPublishState, why: string) => {
+    await unpublishAllMics();
+    try {
+      const track = await createLocalAudioTrack({ ...capture });
+      pendingWhyRef.current = why;
+      await room.localParticipant.publishTrack(track, { ...publish });
+      dedupeAudioTracks();
+    } catch (e: any) {
+      // The old mic is already gone: say so and offer the device picker,
+      // instead of leaving the person silently without a mic.
+      pendingWhyRef.current = null;
+      console.warn(`[MediaControls] mic re-capture (${why}) failed:`, e);
+      setMedia((m) => ({ ...m, audio: { ...m.audio, published: false } }));
+      await refreshInputs("audio");
+      setPublishError({ kind: "audio", message: e?.message ?? String(e) });
+    }
+  };
+
+  /** --------------------------------------------------------------
+   * 🔄 Keep the live mic in the room's mode
+   *
+   * Compares the room's mode with the mode the LIVE track was captured in
+   * (its requested constraints), not the previous prop with the new one. The
+   * old prev-vs-next check missed every mic published before the mode was
+   * known: a refreshed host (autoPublish ran a stale speech closure), a
+   * participant whose JoinSetup ran before shared state arrived. Those stayed
+   * in speech in a music room until someone toggled the mode twice.
+   *
+   * `force` = an explicit room mode change, which also overrides a capture the
+   * user set up by hand in the settings panel.
+   * -------------------------------------------------------------- */
+  const reconcileTriesRef = useRef<{ mode?: AudioMode; n: number }>({ n: 0 });
+  const reconcileAudioMode = (why: string, force = false) =>
+    runAudioOp(async () => {
+      const want = audioModeRef.current;
+      if (!want || !room) return;
+      const pub = liveMicPub(room);
+      if (!pub?.track) return;
+      if (!force && pub.trackSid && pub.trackSid === manualMicSidRef.current) return;
+      const have = captureModeOf(pub.track);
+      if (have === null || have === want) return;
+      // Never loop: at most two re-captures per target mode.
+      if (reconcileTriesRef.current.mode !== want) reconcileTriesRef.current = { mode: want, n: 0 };
+      if (reconcileTriesRef.current.n >= 2) {
+        console.warn(`[AudioMode] mic still in "${have}" after 2 re-captures; leaving it`);
+        return;
+      }
+      reconcileTriesRef.current.n++;
+      levelCheckRef.current = {
+        from: have, to: want, beforeDb: monitorRef.current?.level() ?? null,
+        startedAt: Date.now(), armed: false,
+      };
+      const deviceId = resolveMicDeviceId(mediaRef.current.audio.capture.deviceId);
+      const capture = captureFor(want, deviceId);
+      const publish = AUDIO_MODE_PRESETS[want].publish;
+      setMedia((m) => ({ ...m, audio: { ...m.audio, capture, publish } }));
+      console.log(`[AudioMode] mic "${have}" → "${want}" (${why})`);
+      await recaptureMic(capture, publish, `mode:${why}`);
+    });
+
+  /** --------------------------------------------------------------
+   * 🎚️ Stereo music capture with a dead side → mono
+   * -------------------------------------------------------------- */
+  const stopChannelWatchRef = useRef<() => void>(() => {});
+  const watchMicChannels = () => {
+    stopChannelWatchRef.current();
+    stopChannelWatchRef.current = () => {};
+    const pub = liveMicPub(room);
+    const track = pub?.track;
+    if (!track?.mediaStreamTrack) return;
+    if (captureModeOf(track) !== "music" || requestedChannelsOf(track) < 2) return;
+    const sid = pub.trackSid;
+    stopChannelWatchRef.current = watchForDeadChannel(track.mediaStreamTrack, () => {
+      void runAudioOp(async () => {
+        const live = liveMicPub(room);
+        if (!live?.track || live.trackSid !== sid) return; // replaced meanwhile
+        const deviceId = resolveMicDeviceId(mediaRef.current.audio.capture.deviceId);
+        markMonoInput(deviceId);
+        const capture = { ...mediaRef.current.audio.capture, channelCount: 1, deviceId };
+        setMedia((m) => ({ ...m, audio: { ...m.audio, capture } }));
+        console.warn("[MediaControls] one stereo channel is silent → re-capturing mono");
+        if (sid === manualMicSidRef.current) manualMicSidRef.current = null;
+        await recaptureMic(capture, mediaRef.current.audio.publish, "dead-channel");
+      });
+    });
+  };
+
+  // Every new mic track, however it was published (JoinSetup, autoPublish,
+  // settings panel, a re-capture): log what was asked vs applied, start the
+  // channel watch, and bring it into the room's mode.
+  useEffect(() => {
+    if (!room) return;
+    let lastSid: string | null = null;
+    const onPublished = () => {
+      const pub = liveMicPub(room);
+      if (!pub?.track || pub.trackSid === lastSid) return;
+      lastSid = pub.trackSid;
+      logMicEvent("mic_capture", {
+        why: pendingWhyRef.current ?? "publish",
+        roomMode: audioModeRef.current ?? null,
+        ...micSnapshot(pub.track),
+      });
+      pendingWhyRef.current = null;
+      if (!monitorRef.current) monitorRef.current = new MicLevelMonitor();
+      monitorRef.current.attach(pub.track.mediaStreamTrack);
+      if (levelCheckRef.current) levelCheckRef.current.armed = true;
+      watchMicChannels();
+      void reconcileAudioMode("publish");
+    };
+    onPublished();
+    room.on(RoomEvent.LocalTrackPublished, onPublished);
+    return () => {
+      room.off(RoomEvent.LocalTrackPublished, onPublished);
+      stopChannelWatchRef.current();
+      monitorRef.current?.dispose();
+      monitorRef.current = null;
+    };
+  }, [room]);
+
+  /** --------------------------------------------------------------
+   * 🔉 Did the switch leave this person quiet?
+   *
+   * Music turns automatic gain off, so a mic AGC was lifting in speech arrives
+   * at its own level — the "it got quieter when we changed mode" report. Only
+   * the user's input gain fixes that, so this measures and, when the result is
+   * quiet in music, offers the existing calibration panel (`audio.calibrateMic`,
+   * low_level) through the suggestion bus — the same skill and dedup key the
+   * server's analyser uses, so dismissing one quiets both. Both directions are
+   * logged as `mic_level_after_mode`.
+   * -------------------------------------------------------------- */
+  useEffect(() => {
+    if (!room) return;
+    const iv = setInterval(() => {
+      const chk = levelCheckRef.current;
+      const mon = monitorRef.current;
+      if (!chk?.armed || !mon) return;
+      const timedOut = Date.now() - chk.startedAt > 120_000;
+      if (mon.activeSeconds() < LEVEL_CHECK_ACTIVE_S && !timedOut) return;
+      levelCheckRef.current = null;
+      const afterDb = mon.level();
+      const dropDb = chk.beforeDb != null && afterDb != null
+        ? Math.round((chk.beforeDb - afterDb) * 10) / 10
+        : null;
+      const quiet = afterDb != null && (
+        afterDb < QUIET_DB || (dropDb != null && dropDb >= DROP_DB && afterDb < DROP_FLOOR_DB)
+      );
+      logMicEvent("mic_level_after_mode", {
+        from: chk.from, to: chk.to, beforeDb: chk.beforeDb, afterDb, dropDb, quiet,
+        activeS: mon.activeSeconds(),
+      });
+      if (!quiet || chk.to !== "music") return;
+      const identity = room.localParticipant?.identity;
+      if (!identity) return;
+      suggestionsRef.current?.offer({
+        source: "mic-level",
+        title: "Your mic got quieter in music mode",
+        description:
+          (dropDb != null && dropDb > 0
+            ? `About ${Math.round(dropDb)} dB lower than a moment ago. `
+            : "") +
+          "Music mode turns off automatic gain, so the room now hears your mic's own level. " +
+          "Raise your input gain, or move closer to the mic.",
+        severity: "alert",
+        ttlMs: 30_000,
+        dedupKey: `audio-cal:low_level:${identity}`,
+        invoke: { skill: "audio.calibrateMic", args: { participantId: identity, issue: "low_level" } },
+      });
+    }, 1000);
+    return () => clearInterval(iv);
   }, [room]);
 
   /** --------------------------------------------------------------
@@ -207,100 +485,89 @@ export default function MediaControls({
   }, [autoPublish]);
 
   /** --------------------------------------------------------------
-   * 🔄 React to remote audioMode changes (music / speech)
-   * Aplica el preset y re-publica si ya estaba activo
+   * 🔄 React to room audioMode changes (music / speech)
    * -------------------------------------------------------------- */
   useEffect(() => {
     if (!audioMode || !room) return;
-    if (audioMode === prevAudioModeRef.current) return;
-    prevAudioModeRef.current = audioMode;
-
-    // ✅ Usar AUDIO_MODE_PRESETS de audioSelector, sin duplicar config
-    const preset = AUDIO_MODE_PRESETS[audioMode];
-    if (!preset) return;
-
-    const nextCapture: AudioCaptureState = {
-      ...media.audio.capture,
-      ...preset.capture,
-    };
-    const nextPublish: AudioPublishState = preset.publish;
-
-    console.log(`[AudioMode] → "${audioMode}"`, { nextCapture, nextPublish });
-
     setMedia((m) => ({
       ...m,
-      audio: { ...m.audio, capture: nextCapture, publish: nextPublish },
+      audio: {
+        ...m.audio,
+        capture: captureFor(audioMode, m.audio.capture.deviceId, m.audio.capture),
+        publish: AUDIO_MODE_PRESETS[audioMode].publish,
+      },
     }));
-
-    // Re-publish with the new preset, but only if a mic is actually live.
-    // Serialized through runAudioOp + the room (not stale React state) is the
-    // source of truth, so the unpublish→re-capture can't interleave with
-    // another publish path and leave a duplicate/silent mic behind.
-    runAudioOp(async () => {
-      const audioPubs = (Array.from(room.localParticipant.trackPublications.values()) as any[])
-        .filter((p) => p.track?.kind === Track.Kind.Audio);
-      if (audioPubs.length === 0) return; // nothing live → nothing to re-publish
-      audioPubs.forEach((p) => room.localParticipant.unpublishTrack(p.track));
-      const track = await createLocalAudioTrack({ ...nextCapture });
-      await room.localParticipant.publishTrack(track, { ...nextPublish });
-      dedupeAudioTracks();
-      console.log(`[AudioMode] Re-published in "${audioMode}" mode`);
-    });
+    void reconcileAudioMode("mode-change", true);
   }, [audioMode, room]);
 
   /** --------------------------------------------------------------
    * 🎤 Toggle AUDIO
+   *
+   * With a mic live this mutes by unpublishing it (see doc 08 for why muting
+   * in place was considered and not done). With no mic live it captures and
+   * publishes — `settings` from the settings panel, otherwise the ROOM's mode
+   * read through the ref (not `media`, which is stale in the autoPublish
+   * timer: that is how a refreshed host ended up in speech).
    * -------------------------------------------------------------- */
   const toggleAudio = async (settings?: { capture: AudioCaptureState; publish: AudioPublishState }) => {
     if (!room) return;
 
-    const nextState = {
-      capture: settings?.capture ?? media.audio.capture,
-      publish: settings?.publish ?? media.audio.publish,
-    };
-
     if (settings) {
-      setMedia((m) => ({ ...m, audio: { ...m.audio, ...nextState } }));
+      setMedia((m) => ({ ...m, audio: { ...m.audio, ...settings } }));
     }
 
     // Serialized through runAudioOp so concurrent paths (autoPublish, audioMode
-    // re-publish, rapid double-clicks) can't double-publish the mic. Inside the
-    // lock the room is the source of truth — avoids stale-closure issues where
-    // React state lags behind the actual published state.
+    // re-capture, rapid double-clicks) can't double-publish the mic. Inside the
+    // lock the room is the source of truth.
     await runAudioOp(async () => {
-      const pubs = Array.from(room.localParticipant.trackPublications.values()) as any[];
-      const isActuallyPublished = pubs.some((p) => p.track?.kind === Track.Kind.Audio);
+      const mic = liveMicPub(room);
 
-      if (!isActuallyPublished) {
-        try {
-          const track = await createLocalAudioTrack({ ...nextState.capture });
-          await room.localParticipant.publishTrack(track, { ...nextState.publish });
-          dedupeAudioTracks();
-          setMedia((m) => ({
-            ...m,
-            audio: { ...m.audio, published: true },
-            ui: { ...m.ui, showAudioSettings: false },
-          }));
-        } catch (e: any) {
-          // Surface the failure instead of leaving the UI claiming the mic
-          // is muted. Classic case: macOS Safari with Teams running →
-          // "No CoreAudioCaptureSource device". Refresh device list now
-          // (labels appear after permission grant) and open the modal so
-          // the user can pick a non-default device and retry.
-          console.warn("[MediaControls] audio publish failed:", e);
-          await refreshInputs("audio");
-          setPublishError({
-            kind: "audio",
-            message: e?.message ?? String(e),
-          });
-        }
-      } else {
-        room.localParticipant.trackPublications.forEach((pub: any) => {
-          if (pub.track?.kind === Track.Kind.Audio) {
-            room.localParticipant.unpublishTrack(pub.track);
-          }
-        });
+      if (mic?.track && !settings) {
+        (Array.from(room.localParticipant.trackPublications.values()) as any[])
+          .filter((p) => p.track?.kind === Track.Kind.Audio)
+          .forEach((p) => room.localParticipant.unpublishTrack(p.track));
         setMedia((m) => ({ ...m, audio: { ...m.audio, published: false } }));
+        return;
+      }
+
+      try {
+        const want: AudioMode = audioModeRef.current ?? "speech";
+        // An explicit pick from the settings panel wins and is remembered;
+        // otherwise the mic the user chose, not the OS default.
+        const deviceId = settings
+          ? settings.capture.deviceId
+          : resolveMicDeviceId(mediaRef.current.audio.capture.deviceId);
+        if (settings && deviceId) writeStoredInputDevice(deviceId === "default" ? "" : deviceId);
+        const capture = settings ? { ...settings.capture, deviceId } : captureFor(want, deviceId);
+        const publish = settings ? settings.publish : AUDIO_MODE_PRESETS[want].publish;
+
+        if (mic?.track) {
+          // Settings saved while a mic is live: apply them to a fresh capture.
+          await recaptureMic(capture, publish, "settings");
+        } else {
+          const track = await createLocalAudioTrack({ ...capture });
+          pendingWhyRef.current = settings ? "settings" : "unmute";
+          await room.localParticipant.publishTrack(track, { ...publish });
+          dedupeAudioTracks();
+        }
+        if (settings) manualMicSidRef.current = liveMicPub(room)?.trackSid ?? null;
+        setMedia((m) => ({
+          ...m,
+          audio: { ...m.audio, capture, publish, published: true },
+          ui: { ...m.ui, showAudioSettings: false },
+        }));
+      } catch (e: any) {
+        // Surface the failure instead of leaving the UI claiming the mic
+        // is muted. Classic case: macOS Safari with Teams running →
+        // "No CoreAudioCaptureSource device". Refresh device list now
+        // (labels appear after permission grant) and open the modal so
+        // the user can pick a non-default device and retry.
+        console.warn("[MediaControls] audio publish failed:", e);
+        await refreshInputs("audio");
+        setPublishError({
+          kind: "audio",
+          message: e?.message ?? String(e),
+        });
       }
     });
   };
@@ -310,24 +577,23 @@ export default function MediaControls({
    *  "still failing" state and stay open. */
   const retryAudioWithDevice = async (deviceId: string) => {
     if (!room) throw new Error("Room not available");
-    const captureOverride: AudioCaptureState = {
-      ...media.audio.capture,
-      deviceId,
-    };
+    const want: AudioMode = audioModeRef.current ?? "speech";
+    const captureOverride = captureFor(want, deviceId);
+    const publish = AUDIO_MODE_PRESETS[want].publish;
     // Serialized + drop any existing mic first so a retry REPLACES the track
     // rather than stacking a second one. runAudioOp propagates the rejection,
     // so the modal still sees the throw and stays open on failure.
     await runAudioOp(async () => {
-      (Array.from(room.localParticipant.trackPublications.values()) as any[])
-        .filter((p) => p.track?.kind === Track.Kind.Audio)
-        .forEach((p) => room.localParticipant.unpublishTrack(p.track));
+      await unpublishAllMics();
       const track = await createLocalAudioTrack({ ...captureOverride });
-      await room.localParticipant.publishTrack(track, { ...media.audio.publish });
+      writeStoredInputDevice(deviceId);
+      pendingWhyRef.current = "retry";
+      await room.localParticipant.publishTrack(track, { ...publish });
       dedupeAudioTracks();
     });
     setMedia((m) => ({
       ...m,
-      audio: { ...m.audio, capture: captureOverride, published: true },
+      audio: { ...m.audio, capture: captureOverride, publish, published: true },
     }));
   };
 

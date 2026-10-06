@@ -3,6 +3,7 @@ import { ParticipantOverlay, ParticipantOverlayProps } from "./ParticipantOverla
 import { ParticipantTile } from "@livekit/components-react";
 import HandVideoCrop from "./HandVideoCrop";
 import AudioWaveBackground from "./AudioWaveBackground";
+import IncomingAudioMeter from "./ui/IncomingAudioMeter";
 
 type ParticipantTileWrapperProps = {
   kind: "track" | "hand-zoom";
@@ -65,6 +66,19 @@ export const ParticipantTileWrapper: React.FC<ParticipantTileWrapperProps> = ({
         showAudioIndicator={!isVideoOnly}
         showVideoIndicator={false}
       />
+      {/* Who is making sound — on every tile, so a leaking mic can be spotted
+          without muting people one by one. Hidden when their mic is off.
+          Top-left: the bottom-left corner is the tile's name label, and the
+          top-right is the muted-mic badge. A hand-zoom tile has its swap
+          toggle in that corner, so there it drops below it. */}
+      <div
+        className={`absolute left-1.5 rounded-md bg-black/45 px-1.5 py-1 ${
+          kind === "hand-zoom" ? "top-12" : "top-1.5"
+        }`}
+        style={{ pointerEvents: "none" }}
+      >
+        <IncomingAudioMeter identity={userId} size="md" />
+      </div>
     </div>
   );
 };

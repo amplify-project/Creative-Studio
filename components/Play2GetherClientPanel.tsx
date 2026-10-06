@@ -16,7 +16,6 @@ import {
   SYNC_BARS, SYNC_SPREAD_GOOD_MS, SYNC_SPREAD_FAIR_MS,
   SYNC_FIRST_PLAYED_BEAT, syncCountInSec,
 } from "../app/lib/p2gSync";
-import { Play2GetherLyricsBanner } from "./LyricsOverlay";
 
 function fmtTime(sec: number) {
   const s = Math.floor(sec);
@@ -225,7 +224,37 @@ function WhatIsThis() {
  * Keep it that way when adding a screen. The test is whether the first line
  * answers "what do I do right now" for a person who has never seen this panel.
  */
-export default function Play2GetherClientPanel() {
+/**
+ * The panel's content box. The panel itself no longer decides where it sits:
+ * on the participant page it is the "Play2Gether" tab of the right-hand
+ * column (ParticipantControlPanel, docked), next to the chat, with the stage
+ * resized around the column rather than covered (field report 2026-09-28: the
+ * old centred card sat on the videos and could not be moved).
+ */
+function Body({ children }: { children: React.ReactNode }) {
+  return <div className="flex flex-col items-center gap-5 px-5 py-6">{children}</div>;
+}
+
+/** What the column needs to know without rendering the panel. */
+export type P2GPanelStatus = {
+  /** There is something to show: a session is running or a calibration round is on. */
+  active: boolean;
+  /** Something to act on in seconds — the column switches to this tab. */
+  urgent: boolean;
+  /** Worth a pulse on a hidden tab: a countdown, a take, a calibration round. */
+  attention: boolean;
+};
+
+/**
+ * Must stay MOUNTED for the whole session, whichever tab is showing: its hook
+ * instance is the one with `capture` on — it owns the recorder, the upload
+ * and the metronome. Hide it with CSS, never unmount it.
+ */
+export default function Play2GetherClientPanel({
+  onStatus,
+}: {
+  onStatus?: (s: P2GPanelStatus) => void;
+}) {
   const {
     p2g, phase, countdown, recordingProgress,
     uploading, uploadDone, uploadSlot, uploadError, uploadErrorKind, retryUpload, markReady,
@@ -248,6 +277,21 @@ export default function Play2GetherClientPanel() {
   // below, including the passive "someone else is recording" one.
   const calibRoundActive = calibRound.status !== "idle";
 
+  // Things with a deadline measured in seconds bring this tab to the front,
+  // even over the chat: the countdown and the take (for the person
+  // recording), and a calibration round (six seconds to get the headphones
+  // off). Everything else leaves the column where the participant put it.
+  const urgent =
+    calibRoundActive ||
+    (isLocalTarget && (phase === "countdown" || phase === "recording"));
+  const active = !(phase === "idle" && !calibRoundActive);
+  const attention = phase === "countdown" || phase === "recording" || calibRoundActive;
+  const onStatusRef = useRef(onStatus);
+  onStatusRef.current = onStatus;
+  useEffect(() => {
+    onStatusRef.current?.({ active, urgent, attention });
+  }, [active, urgent, attention]);
+
   // Do not render anything when idle
   if (phase === "idle" && !calibRoundActive) return null;
 
@@ -262,10 +306,9 @@ export default function Play2GetherClientPanel() {
   const inCountIn =
     isSyncRound && recordingProgress * roundDuration < syncCountInSec();
 
-  // Lyrics banner: shared between the passive-observer view and the normal
-  // overlay so a non-target sees the same scrolling lyrics as the singer.
-  // Self-contained — gates visibility internally based on phase + lyricsUrl.
-  const lyricsBanner = <Play2GetherLyricsBanner />;
+  // The lyrics banner is not rendered here any more: it belongs over the
+  // stage, and this panel is now a column beside it. MainStageParticipant
+  // mounts it inside the stage; it gates itself on phase + lyrics.
 
   // Single-participant round: non-targets see a passive "X is recording…"
   // overlay during the active phases. Rehearsal/preparing/done still apply
@@ -279,14 +322,7 @@ export default function Play2GetherClientPanel() {
     const who = targetName ?? "Someone";
     return (
       <>
-        {lyricsBanner}
-        <div
-          className="absolute inset-0 z-40 flex items-center justify-center
-                     bg-black/0"
-        >
-          <div className="flex flex-col items-center gap-5 px-8 py-10
-                          bg-zinc-900/90 border border-zinc-700 rounded-2xl shadow-2xl pointer-events-auto
-                          max-w-sm w-full mx-4">
+        <Body>
             <div className="relative flex items-center justify-center">
               <span className="absolute w-16 h-16 rounded-full bg-rose-500/20 animate-ping" />
               <div className="w-14 h-14 rounded-full bg-rose-600 flex items-center justify-center">
@@ -305,8 +341,7 @@ export default function Play2GetherClientPanel() {
               </p>
             </div>
             <WhatIsThis />
-          </div>
-        </div>
+        </Body>
       </>
     );
   }
@@ -317,10 +352,7 @@ export default function Play2GetherClientPanel() {
   // once it ended. Nothing is wrong with them; they were not here.
   if (missedRound) {
     return (
-      <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none">
-        <div className="flex flex-col items-center gap-4 px-8 py-9
-                        bg-zinc-900/95 border border-zinc-700 rounded-2xl shadow-2xl
-                        max-w-sm w-full mx-4 pointer-events-auto">
+      <Body>
           <Music2 className="w-10 h-10 text-zinc-500" />
           <div className="text-center">
             <p className="text-lg font-semibold text-white">You joined mid-take</p>
@@ -334,33 +366,21 @@ export default function Play2GetherClientPanel() {
             </p>
           </div>
           <WhatIsThis />
-        </div>
-      </div>
+      </Body>
     );
   }
 
   if (calibRoundActive) {
     return (
-      <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none">
-        <div className="flex flex-col items-center gap-5 px-8 py-10
-                        bg-zinc-900/95 border border-zinc-700 rounded-2xl shadow-2xl
-                        max-w-sm w-full mx-4 pointer-events-auto">
+      <Body>
           <CalibRoundPanel state={calibRound} />
-        </div>
-      </div>
+      </Body>
     );
   }
 
   return (
     <>
-      {lyricsBanner}
-      <div
-        className="absolute inset-0 z-40 flex items-center justify-center
-                   pointer-events-none"
-      >
-      <div className="flex flex-col items-center gap-6 px-8 py-10
-                      bg-zinc-900/90 border border-zinc-700 rounded-2xl shadow-2xl
-                      max-w-sm w-full mx-4 pointer-events-auto">
+      <Body>
 
         {/* Calibration takes over the panel while it runs — it needs the room
             quiet and the person's attention, and it is over in ~10 s. */}
@@ -732,8 +752,7 @@ export default function Play2GetherClientPanel() {
           </>
         )}
         </>)}
-      </div>
-    </div>
+      </Body>
     </>
   );
 }
