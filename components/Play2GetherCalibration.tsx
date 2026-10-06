@@ -11,11 +11,26 @@
 import { useEffect, useState } from "react";
 import { routeContextDeviceOnly } from "../app/utils/outputBus";
 import { useMaybeRoomContext } from "@livekit/components-react";
-import { Track, type Room } from "livekit-client";
+import type { Room } from "livekit-client";
 import { Loader2, CheckCircle2, AlertTriangle, Gauge, ChevronRight } from "lucide-react";
 import { AUDIO_MODE_PRESETS } from "./audioSelector";
 import { p2gLog, withNet } from "../app/lib/p2gTelemetry";
-import { readStoredInputDevice } from "../app/hooks/useOutputVolume";
+import {
+  analyseCapture,
+  CLICK_OFFSET_MS,
+  MARKER_OFFSET_MS,
+  MIN_SUCCESSFUL_TRIALS,
+  RECORD_MS,
+  SPREAD_LIMIT_MS,
+  START_AT_LEAD_MS,
+  summariseTrials,
+  TRIALS,
+} from "../app/lib/p2gCalibAnalysis";
+import { calibrationMic, type CalibMic } from "../app/lib/p2gCalibMic";
+
+// Re-exported: other components import these from here.
+export { MIN_SUCCESSFUL_TRIALS, SPREAD_LIMIT_MS, summariseTrials, TRIALS, calibrationMic };
+export type { CalibMic };
 
 /**
  * What a trial saw, beyond the number it returned.
@@ -57,37 +72,7 @@ export type CalibDiag = Partial<{
  * normally cancels). Opens a fresh getUserMedia for the measurement so we don't
  * disturb the LiveKit mic track.
  */
-/** Below this, the measurement is not a speaker→air→mic round trip. Even a
- *  wired laptop with the mic touching the speaker sits around 20–40 ms once
- *  output buffering, the ADC and the capture graph are counted. */
-const MIN_PLAUSIBLE_LATENCY_MS = 8;
 
-/** The microphone a calibration must measure, and how it was chosen. */
-export type CalibMic = { deviceId: string; source: "published" | "stored" | "default" };
-
-/**
- * The mic the ROUND will record with, so calibration measures that one.
- *
- * Calibration used to open getUserMedia with no deviceId, i.e. the OS default
- * input — while the session publishes the mic picked in the app. When the two
- * differ the trial measures the wrong device: found on 2026-10-06 when the
- * system default was a silent virtual mic (noiseFloor exactly 0, "Click not
- * heard" five times) while the published mic worked fine. With two real mics
- * it is worse — a plausible number for a path nobody sings through.
- *
- * Order: the device of the mic track actually published in the room (the
- * truth), then the mic stored as picked in the app, then the OS default.
- */
-export function calibrationMic(room: Room | null | undefined): CalibMic {
-  try {
-    const pub = room?.localParticipant?.getTrackPublication(Track.Source.Microphone);
-    const id = pub?.track?.mediaStreamTrack?.getSettings().deviceId;
-    if (id) return { deviceId: id, source: "published" };
-  } catch { /* fall through to the stored choice */ }
-  const stored = readStoredInputDevice();
-  if (stored && stored !== "default") return { deviceId: stored, source: "stored" };
-  return { deviceId: "", source: "default" };
-}
 
 export async function runAcousticTrial(
   onDiag?: (d: CalibDiag) => void,
@@ -165,35 +150,8 @@ export async function runAcousticTrial(
 
     const sampleRate = ctx.sampleRate;
 
-    // ── The measurement window ──────────────────────────────────────────────
-    //
-    // Everything is scheduled relative to `startAt`, which is itself
-    // START_AT_LEAD_MS after the capture gate opens — so the buffer has to hold
-    // that lead-in as well as the trip being measured.
-    //
-    // This used to be a flat `RECORD_MS = 900` commented as "long enough for up
-    // to ~600 ms BT latency". It was not: the lead-in ate 50 of those, leaving
-    // ~550, and the comment went on claiming 600. Deriving the window from the
-    // same constants that schedule the clicks is the only way the budget and
-    // the schedule cannot drift apart again — the identical reasoning behind
-    // taking the capture `latency` from AUDIO_MODE_PRESETS rather than
-    // re-typing it.
-    const START_AT_LEAD_MS = 50;
-    const MARKER_OFFSET_MS = 100;
-    const CLICK_OFFSET_MS = 300;       // 200 ms after marker
-    const SCHEDULED_GAP_MS = CLICK_OFFSET_MS - MARKER_OFFSET_MS;
-    /** Longest round trip this is willing to measure. Not 600: A2DP output on
-     *  macOS alone runs 150-300 ms and the input side adds its own, and a field
-     *  session produced a participant needing more than 500. */
-    const MAX_MEASURABLE_RT_MS = 1000;
-    /** Slack after the latest click we accept, so its decay and the onset
-     *  walk-back sit inside the buffer instead of being clipped by it. */
-    const TAIL_MS = 80;
-    const RECORD_MS =
-      START_AT_LEAD_MS + CLICK_OFFSET_MS + MAX_MEASURABLE_RT_MS + TAIL_MS;
-    /** A peak nearer than this to the end of the capture is not treated as the
-     *  click. See the throw below. */
-    const EDGE_GUARD_MS = 40;
+    // The window and schedule constants live in app/lib/p2gCalibAnalysis.ts,
+    // next to the analysis that depends on them.
 
     diag.recordMs = RECORD_MS;
     diag.sampleRate = sampleRate;
@@ -275,105 +233,19 @@ export async function runAcousticTrial(
     micSource.disconnect();
     silent.disconnect();
 
-    const ms = (samples: number) => (samples / sampleRate) * 1000;
-    const toIdx = (millis: number) => Math.floor((millis / 1000) * sampleRate);
-
-    // Estimate noise floor from the first 50 ms (pre-marker).
-    let sumSq = 0;
-    let count = 0;
-    const noiseEnd = Math.min(writeIdx, toIdx(50));
-    for (let i = 0; i < noiseEnd; i++) {
-      sumSq += buf[i] * buf[i];
-      count++;
+    // The capture is in; everything from here on is pure analysis.
+    try {
+      const latencyMs = analyseCapture(buf, writeIdx, sampleRate, diag);
+      // Diagnostics: this runs a handful of times per session on explicit user
+      // action, so it always logs. A bad calibration is otherwise invisible —
+      // the number just looks plausible and every take lands wrong.
+      console.log("[p2g-calib]", diag);
+      return latencyMs;
+    } finally {
+      // Raw capture for offline inspection (dump it to a WAV if a trial looks
+      // off) — kept for failed trials too, which are the ones worth dumping.
+      (window as unknown as Record<string, unknown>).__p2gCalibLast = { buf: buf.slice(0, writeIdx), ...diag };
     }
-    const noiseFloor = count > 0 ? Math.sqrt(sumSq / count) : 0.001;
-    diag.noiseFloor = +noiseFloor.toFixed(5);
-    diag.capturedMs = +ms(writeIdx).toFixed(0);
-
-    const peakIn = (start: number, end: number) => {
-      let peak = 0;
-      let idx = -1;
-      for (let i = Math.max(0, start); i < Math.min(end, writeIdx); i++) {
-        const a = Math.abs(buf[i]);
-        if (a > peak) { peak = a; idx = i; }
-      }
-      return { peak, idx };
-    };
-    /** Walk back from a peak to the sample where the transient actually starts.
-     *  Onset detection has to be relative to the peak, not to an absolute
-     *  threshold: an absolute threshold latches onto whatever room noise
-     *  happens to be present at the start of the search window and reports a
-     *  latency of ~0. */
-    const onsetBefore = (peakIdx: number, peak: number, searchStart: number) => {
-      const floor = Math.max(0.25 * peak, 3 * noiseFloor);
-      let i = peakIdx;
-      while (i > searchStart && Math.abs(buf[i - 1]) > floor) i--;
-      return i;
-    };
-
-    // Marker: digitally injected at 0.7 amplitude, so nothing else in the
-    // buffer comes close — find it as the loudest thing in the pre-click
-    // region rather than the first sample over a soft threshold.
-    const markerRegion = peakIn(0, toIdx(280));
-    if (markerRegion.idx < 0 || markerRegion.peak < Math.max(0.15, 8 * noiseFloor)) {
-      throw new Error("Internal sync marker lost — try again.");
-    }
-    const markerIdx = onsetBefore(markerRegion.idx, markerRegion.peak, 0);
-    diag.markerMs = +ms(markerIdx).toFixed(1);
-    diag.markerPeak = +markerRegion.peak.toFixed(4);
-
-    // Acoustic click: scheduled for marker + 200 ms, arriving later by the
-    // round-trip latency we're measuring. Take the loudest peak in the window
-    // and back off to its onset; a real click through speakers dominates room
-    // noise, which is what makes this immune to the false early trigger.
-    const clickSearchStart = markerIdx + toIdx(SCHEDULED_GAP_MS) - toIdx(10);
-    const clickRegion = peakIn(clickSearchStart, writeIdx);
-    if (clickRegion.idx < 0 || clickRegion.peak < Math.max(0.015, 6 * noiseFloor)) {
-      throw new Error("Click not heard. Move mic closer to the speaker / turn volume up.");
-    }
-    // A peak pressed up against the end of the capture is not evidence of the
-    // click; it is evidence that the click may have landed OUTSIDE the window
-    // and the loudest thing still inside got matched instead. That produces a
-    // confident, repeatable, wrong number — the exact failure this measurement
-    // exists to prevent — so refuse it rather than report it.
-    if (clickRegion.idx > writeIdx - toIdx(EDGE_GUARD_MS)) {
-      throw new Error(
-        `Click arrived at the very end of the ${RECORD_MS} ms window — your ` +
-        `round-trip delay is longer than this can measure. That is almost ` +
-        `always a Bluetooth headset; try a wired one.`,
-      );
-    }
-    const clickIdx = onsetBefore(clickRegion.idx, clickRegion.peak, clickSearchStart);
-    diag.clickMs = +ms(clickIdx).toFixed(1);
-    diag.clickPeak = +clickRegion.peak.toFixed(4);
-    // Distance from clickPeakMs to capturedMs is what says whether the click
-    // landed at the edge of the RECORD_MS window instead of inside it.
-    diag.clickPeakMs = +ms(clickRegion.idx).toFixed(1);
-    diag.gapMs = +ms(clickIdx - markerIdx).toFixed(1);
-
-    const latencyMs = ms(clickIdx - markerIdx) - SCHEDULED_GAP_MS;
-    diag.latencyMs = Math.round(latencyMs);
-
-    // Diagnostics: this runs a handful of times per session on explicit user
-    // action, so it always logs. A bad calibration is otherwise invisible —
-    // the number just looks plausible and every take lands wrong.
-    console.log("[p2g-calib]", diag);
-    // Raw capture for offline inspection (dump it to a WAV if a trial looks off).
-    (window as unknown as Record<string, unknown>).__p2gCalibLast = { buf: buf.slice(0, writeIdx), ...diag };
-
-    if (latencyMs < MIN_PLAUSIBLE_LATENCY_MS) {
-      // A speaker→air→mic round trip is never this fast. Either the click was
-      // missed and we latched onto noise, or the "mic" is a digital loopback
-      // of the output (virtual/monitor input device) — in which case the value
-      // is meaningless for a real singer. Fail loudly instead of returning a 0
-      // that silently mis-aligns every take.
-      throw new Error(
-        `Measured ${Math.round(latencyMs)} ms — too low to be a real acoustic path. ` +
-        `Check that the click plays through speakers (not headphones) and that your ` +
-        `input device is a real microphone, not a loopback/monitor.`,
-      );
-    }
-    return Math.round(latencyMs);
   } finally {
     // Before the teardown, and outside the success path on purpose: a thrown
     // trial is the one worth seeing.
@@ -383,42 +255,6 @@ export async function runAcousticTrial(
   }
 }
 
-/** Trials per run. Five rather than three so one bad trial can be discarded
- *  outright and still leave a majority to average. */
-export const TRIALS = 5;
-/** A run needs at least this many successful trials to report anything. */
-export const MIN_SUCCESSFUL_TRIALS = 3;
-/** Spread (max − min across the kept trials) above which the measurement is
- *  not trustworthy. The same device measured repeatedly should land inside
- *  20–30 ms; field reports of 110 ms on one run and 250 ms on the next, same
- *  hardware, are what this catches — either the click isn't being detected or
- *  the audio path is being reconfigured between runs, and both make the
- *  resulting number worse than useless, since it is applied to every take. */
-export const SPREAD_LIMIT_MS = 50;
-
-/**
- * Reduce a run's trials to a single latency.
- *
- * Trimmed mean, not the plain median it used to be: with 5 trials we can throw
- * away the highest AND lowest (the shape a missed click takes) and average what
- * is left, which uses three measurements instead of betting everything on the
- * middle one. The spread of the KEPT trials is returned alongside — that is the
- * number that says whether to believe the value at all.
- */
-export function summariseTrials(trials: number[]) {
-  const sorted = [...trials].sort((a, b) => a - b);
-  const trimmed = sorted.length >= 5 ? sorted.slice(1, -1) : sorted;
-  const value = Math.round(trimmed.reduce((a, b) => a + b, 0) / trimmed.length);
-  const low = trimmed[0];
-  const high = trimmed[trimmed.length - 1];
-  return {
-    value,
-    low,
-    high,
-    spread: trimmed.length > 1 ? high - low : 0,
-    droppedCount: sorted.length - trimmed.length,
-  };
-}
 
 /**
  * Acoustic-loopback latency calibration UI. Runs TRIALS measurements and

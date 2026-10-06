@@ -1,0 +1,5 @@
+# Only what the unit tests import. numpy matches the agents' requirements.txt.
+numpy==1.26.0
+onnxruntime==1.25.1
+jsonpatch==1.33
+pytest==9.0.3
