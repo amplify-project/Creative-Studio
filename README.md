@@ -65,55 +65,27 @@ room as ordinary — if hidden — participants. The full reasoning is in
 
 ## Quick start
 
+The full procedure — configuration, TLS, firewall, and how to update a running
+server — is in [`docs/deployment.md`](docs/deployment.md). In short:
+
 ```bash
-git clone <this repository>
+git clone https://github.com/amplify-project/Creative-Studio.git
 cd Creative-Studio
-
-cp .env.example server/.env                    # fill in NODE_IP and generate the secrets
-cp server/server.yaml.example server/server.yaml   # LiveKit's own config, see below
-./scripts/fetch-models.sh                      # 97 MB of third-party ONNX weights, not in git
+./scripts/fetch-models.sh                          # third-party ONNX weights, not in git
+cp .env.example server/.env                        # fill in: every secret generated fresh
+cp server/server.yaml.example server/server.yaml   # LiveKit keys + Redis password, by hand
+# a TLS certificate — self-signed is fine locally, see docs/deployment.md
 cd server
-sudo docker compose up -d
-```
-
-Neither copied file is tracked, and both must be filled in by hand. LiveKit
-cannot read environment variables from its config, so `server/server.yaml`
-needs two values written into it directly, and both have to agree with
-`server/.env`:
-
-| `server/server.yaml` | must equal |
-|---|---|
-| the `keys:` pair | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` |
-| `redis:` → `password:` | `REDIS_PASSWORD` |
-
-Everything else — including the Redis password the container itself enforces —
-comes from `server/.env`. If a required variable is missing, `docker compose`
-refuses to start and names it, rather than bringing the stack up misconfigured.
-
-The stack brings up LiveKit, its ingress, Redis, MongoDB, nginx, the Python
-agents and the web app. Then open **https://localhost** (the development
-certificate is self-signed, so the browser will ask you to accept it).
-
-Generate the LiveKit key pair, which `.env` and `server/server.yaml` must
-agree on — the pair goes in `server/.env` and in `server/server.yaml`:
-
-```bash
-docker run --rm livekit/livekit-server generate-keys
+docker compose build                               # `up` alone never rebuilds
+docker compose up -d
 ```
 
 ### Running only the web app
 
-```bash
-npm install
-cp .env.example .env.local         # point LIVEKIT_URL at a reachable LiveKit
-npm run dev                        # plain next dev
-npm run startdev                   # custom server.js (HTTP)
-npm run startdevssl                # custom server.js (HTTPS — needed for getUserMedia
-                                   # on anything that is not localhost)
-```
-
-`npm run build` runs `prisma generate` first. To typecheck without a full
-build, use `npx tsc --noEmit`.
+See "Developing without rebuilding the image" in
+[`docs/deployment.md`](docs/deployment.md): the stack runs in Docker and Next.js
+runs on the host behind its nginx. `npm run build` runs `prisma generate`
+first; to typecheck without a build, use `npx tsc --noEmit`.
 
 ## Configuration
 
