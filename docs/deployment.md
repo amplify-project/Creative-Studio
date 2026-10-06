@@ -124,3 +124,31 @@ docker run --rm livekit/livekit-server generate-keys
 
 TLS material (`certs/`, `server/nginx/certs/`, `server/livekit.key`) is also
 per deployment and is not kept in this repository.
+
+---
+
+## Rotating the Mongo credentials
+
+`MONGO_ADMIN_PASSWORD` and `MONGO_APP_PASSWORD` are only read when
+`server/data1` is empty, to create the users. On a running install, changing
+them in `server/.env` alone locks the web app out: change them in the database
+first, then in `.env`. `MONGO_REPLICA_KEY` has no such state — a new value
+takes effect on the next start.
+
+```bash
+cd server
+NEW_ADMIN=$(openssl rand -hex 24)
+NEW_APP=$(openssl rand -hex 24)
+NEW_KEY=$(openssl rand -base64 756 | tr -d '\n')
+
+# 1. In the database, while it runs (asks for the CURRENT admin password)
+docker exec -it mongo1_portable mongosh -u admin -p --authenticationDatabase admin --eval "
+  db.getSiblingDB('mydb').changeUserPassword('nextauth', '$NEW_APP');
+  db.getSiblingDB('admin').changeUserPassword('admin', '$NEW_ADMIN');"
+
+# 2. In server/.env: MONGO_ADMIN_PASSWORD, MONGO_APP_PASSWORD, MONGO_REPLICA_KEY,
+#    and the password inside DATABASE_URL.
+
+# 3. Restart both
+docker compose up -d mongo webapp
+```

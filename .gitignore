@@ -70,3 +70,6 @@ CLAUDE.md
 # tracked: nothing public can reproduce those.
 /server/agents/assistantHost/audioAnalysis/yamnet_model.onnx
 /server/agents/assistantHost/audioAnalysis/dac_encoder.onnx
+
+# Was tracked until 2026-10; now generated per install into server/.env.
+server/mongo/mongo-keyfile

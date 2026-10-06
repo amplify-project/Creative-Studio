@@ -12,8 +12,10 @@ ENV MONGO_HOST=127.0.0.1
 # --- Script de inicialización del Replica Set (se ejecuta 1 vez si el volumen está vacío) ---
 COPY rs-init.js /docker-entrypoint-initdb.d/01-rs-init.js
 COPY init-users.js /docker-entrypoint-initdb.d/02-init-users.js
-COPY mongo-keyfile /data/keyfile
-RUN chown mongodb:mongodb /data/keyfile && chmod 400 /data/keyfile
+# The replica-set keyfile is written at start-up from MONGO_REPLICA_KEY, never
+# baked into the image — see keyfile-entrypoint.sh.
+COPY keyfile-entrypoint.sh /usr/local/bin/keyfile-entrypoint.sh
+ENTRYPOINT ["keyfile-entrypoint.sh"]
 
 # --- Importante: arrancar con --replSet ---
 CMD ["mongod", "--replSet", "rs0", "--bind_ip_all"]

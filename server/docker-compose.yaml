@@ -126,10 +126,18 @@ services:
     container_name: mongo1_portable
     hostname: mongo1
     command: ["--replSet", "rs0", "--keyFile", "/data/keyfile", "--auth"]
+    environment:
+      MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?the replica-set keyfile content, see .env.example}
+      # Read only on first start, when ./data1 is empty (init-users.js).
+      MONGO_ADMIN_PASSWORD: ${MONGO_ADMIN_PASSWORD:?see .env.example}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?see .env.example}
     volumes:
       - ./data1:/data/db
     ports:
-      - "27017:27017"
+      # Loopback only. The web app runs on the host network and reaches Mongo at
+      # localhost:27017; nothing outside this machine has any reason to. It used
+      # to be published on every interface.
+      - "127.0.0.1:27017:27017"
   webapp:
     build:
       context: ../
