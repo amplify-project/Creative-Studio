@@ -1,0 +1,90 @@
+# Checks every pull request into develop or main, and every push to them.
+#
+# Phase 1: cheap checks that each would have caught a real mistake made in
+# this repository — not tests of behaviour yet. See docs/deployment.md for why
+# each of these things matters on a server.
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: No secrets committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # By file name: per-install secrets, certificates, databases, model weights.
+      # Catches what content scanners miss (a Mongo keyfile is a random blob).
+      - name: Forbidden files
+        run: scripts/ci/check-forbidden-files.sh
+
+      # By content: known key formats, high-entropy tokens.
+      - name: gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -fsSL -o gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum -c -
+          tar -xzf gitleaks.tgz gitleaks
+          ./gitleaks dir . --no-banner --redact
+
+  web:
+    name: Web app typechecks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24          # matches the Dockerfile (node:24.12-alpine)
+          cache: npm
+
+      # Fails if package-lock.json is out of step with package.json — the
+      # lockfile is what keeps a rebuild from silently upgrading livekit-client.
+      - run: npm ci
+
+      # The Prisma client's types are generated, and the app imports them.
+      - run: npx prisma generate --schema app/dbbackend/model/schema.prisma
+
+      - run: npx tsc --noEmit
+
+  python:
+    name: Agents compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"    # matches the agents' Dockerfiles (python:3.11-slim)
+      - run: python -m compileall -q server/agents scripts
+
+  compose:
+    name: Compose files and .env.example agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A variable compose requires but .env.example omits breaks the next
+      # fresh install, and nothing would notice until then.
+      - name: Every required variable is documented
+        run: scripts/ci/check-env-documented.sh
+
+      - name: docker compose config
+        run: |
+          scripts/ci/ci-env.sh > "$RUNNER_TEMP/ci.env"
+          cd server
+          docker compose -f docker-compose.yaml     --env-file "$RUNNER_TEMP/ci.env" config -q
+          docker compose -f docker-compose.dev.yaml --env-file "$RUNNER_TEMP/ci.env" config -q
