@@ -1,5 +1,9 @@
 # MongoDB Community 8.x
-FROM mongo:8
+# Pinned: an unpinned `mongo:8` pulled 8.3.11 on 2026-10-06, which refuses to
+# start on Linux kernel 6.19+ (SERVER-121912) — the production box runs 7.0.
+# 8.2.1 is the version that has run production since 2025-11. Data files are
+# 8.x format: never go back to 7.x.
+FROM mongo:8.2.1
 
 # --- Configuración de credenciales y DB por defecto ---
 # Cambia estos valores en tiempo de build o mejor en 'docker run' / compose.

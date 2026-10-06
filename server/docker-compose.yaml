@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.5-alpine
     restart: unless-stopped
     volumes:
       - redis-data:/data
@@ -18,7 +18,10 @@ services:
     network_mode: host
 
   livekit:
-    image: livekit/livekit-server
+    # Pinned with the client: livekit-client (package-lock.json) and this
+    # server must be upgraded together. 1.13.7 is the first verified with
+    # livekit-client 2.22.3 (2026-10-06).
+    image: livekit/livekit-server:v1.13.7
     command: --config /config/livekit.yaml --node-ip=${NODE_IP:-127.0.0.1}
     volumes:
       - ./server.yaml:/config/livekit.yaml
@@ -52,7 +55,7 @@ services:
     network_mode: host
 
   livekit-ingress:
-    image: livekit/ingress
+    image: livekit/ingress:v1.5.0
     command: /ingress --config /config.yaml
     volumes:
       - ./ingress/config.yaml:/config.yaml:ro
