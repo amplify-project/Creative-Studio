@@ -55,7 +55,7 @@ services:
     network_mode: host
 
   livekit-ingress:
-    image: livekit/ingress
+    image: livekit/ingress:v1.5.0
     command: /ingress --config /config.yaml
     volumes:
       - ./ingress/config.yaml:/config.yaml:ro
