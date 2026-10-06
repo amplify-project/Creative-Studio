@@ -11,10 +11,11 @@
 import { useEffect, useState } from "react";
 import { routeContextDeviceOnly } from "../app/utils/outputBus";
 import { useMaybeRoomContext } from "@livekit/components-react";
-import type { Room } from "livekit-client";
+import { Track, type Room } from "livekit-client";
 import { Loader2, CheckCircle2, AlertTriangle, Gauge, ChevronRight } from "lucide-react";
 import { AUDIO_MODE_PRESETS } from "./audioSelector";
 import { p2gLog, withNet } from "../app/lib/p2gTelemetry";
+import { readStoredInputDevice } from "../app/hooks/useOutputVolume";
 
 /**
  * What a trial saw, beyond the number it returned.
@@ -32,6 +33,10 @@ export type CalibDiag = Partial<{
    *  calibration and the round ran through the same audio path at all. */
   trackDeviceId: string; trackSampleRate: number; trackLatency: number;
   trackChannels: number; aec: boolean; ns: boolean; agc: boolean;
+  /** Which mic the trial ASKED for and where that choice came from — read
+   *  against `trackDeviceId` it says whether the measurement ran on the mic
+   *  the round records with. */
+  requestedDeviceId: string; micSource: CalibMic["source"];
   noiseFloor: number; capturedMs: number;
   markerMs: number; markerPeak: number;
   clickMs: number; clickPeak: number; clickPeakMs: number; gapMs: number;
@@ -57,10 +62,38 @@ export type CalibDiag = Partial<{
  *  output buffering, the ADC and the capture graph are counted. */
 const MIN_PLAUSIBLE_LATENCY_MS = 8;
 
+/** The microphone a calibration must measure, and how it was chosen. */
+export type CalibMic = { deviceId: string; source: "published" | "stored" | "default" };
+
+/**
+ * The mic the ROUND will record with, so calibration measures that one.
+ *
+ * Calibration used to open getUserMedia with no deviceId, i.e. the OS default
+ * input — while the session publishes the mic picked in the app. When the two
+ * differ the trial measures the wrong device: found on 2026-10-06 when the
+ * system default was a silent virtual mic (noiseFloor exactly 0, "Click not
+ * heard" five times) while the published mic worked fine. With two real mics
+ * it is worse — a plausible number for a path nobody sings through.
+ *
+ * Order: the device of the mic track actually published in the room (the
+ * truth), then the mic stored as picked in the app, then the OS default.
+ */
+export function calibrationMic(room: Room | null | undefined): CalibMic {
+  try {
+    const pub = room?.localParticipant?.getTrackPublication(Track.Source.Microphone);
+    const id = pub?.track?.mediaStreamTrack?.getSettings().deviceId;
+    if (id) return { deviceId: id, source: "published" };
+  } catch { /* fall through to the stored choice */ }
+  const stored = readStoredInputDevice();
+  if (stored && stored !== "default") return { deviceId: stored, source: "stored" };
+  return { deviceId: "", source: "default" };
+}
+
 export async function runAcousticTrial(
   onDiag?: (d: CalibDiag) => void,
+  mic: CalibMic = { deviceId: "", source: "default" },
 ): Promise<number> {
-  const diag: CalibDiag = {};
+  const diag: CalibDiag = { requestedDeviceId: mic.deviceId, micSource: mic.source };
   const stream = await navigator.mediaDevices.getUserMedia({
     // `latency` is in the Media Capture spec and Chrome honours it, but
     // lib.dom's MediaTrackConstraints hasn't caught up — hence the cast,
@@ -87,6 +120,12 @@ export async function runAcousticTrial(
       // (see the host panel's music-mode warning), so it is not a
       // configuration this measurement needs to be correct in.
       latency: AUDIO_MODE_PRESETS.music.capture.latency,
+      // The published track's device is known to exist, so it is required
+      // outright; a stored choice may be stale (unplugged), so it is only
+      // preferred and the OS default stands in rather than failing the trial.
+      ...(mic.deviceId
+        ? { deviceId: mic.source === "published" ? { exact: mic.deviceId } : { ideal: mic.deviceId } }
+        : {}),
     } as MediaTrackConstraints,
   });
   // Record the path the OS actually handed back, before anything else.
@@ -441,6 +480,10 @@ function reportRun(
     noiseFloor: last.noiseFloor ?? null,
     sampleRate: last.sampleRate ?? null,
     trackDeviceId: last.trackDeviceId ?? null,
+    micSource: last.micSource ?? null,
+    // false = the OS handed back a different mic than the one asked for, so
+    // the number (or the failure) is about the wrong device.
+    micMatch: last.requestedDeviceId ? last.requestedDeviceId === last.trackDeviceId : null,
     trackSampleRate: last.trackSampleRate ?? null,
     trackLatencyMs: last.trackLatency != null ? Math.round(last.trackLatency * 1000) : null,
     trackChannels: last.trackChannels ?? null,
@@ -507,11 +550,14 @@ export async function runCalibrationRun(
   const stopped = () => opts.cancelled?.() === true;
   const abandoned = (): CalibRunOutcome => ({ ok: false, error: "cancelled", trials: results });
 
+  // Resolved once per run: all five trials measure the same device.
+  const mic = calibrationMic(room);
+
   for (let i = 0; i < TRIALS; i++) {
     if (stopped()) return abandoned();
     opts.onProgress?.({ trialIdx: i, results: [...results], failed });
     try {
-      const ms = await runAcousticTrial((d) => diags.push(d));
+      const ms = await runAcousticTrial((d) => diags.push(d), mic);
       if (stopped()) return abandoned();
       results.push(ms);
     } catch (err) {
