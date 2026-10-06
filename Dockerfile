@@ -14,11 +14,13 @@ WORKDIR /app
 # prove the port equal); if it does not, both this and the script come out. See
 # the "Where this runs" section of doc 12.
 RUN apk add --no-cache ffmpeg python3 py3-numpy
-# Copiar package.json, lockfile y .npmrc para paquetes privados
-COPY package.json package.json
-
-# Instalar dependencias
-RUN npm i
+# Exact dependency versions from the lockfile. `npm i` against package.json's
+# ^ranges re-resolved everything on each build: on 2026-10-06 a rebuild pulled
+# livekit-client 2.22.3 onto a LiveKit server it no longer negotiated with
+# (a reconnect loop every ~17 s). Update deliberately: `npm update`, test, and
+# commit the new package-lock.json.
+COPY package.json package-lock.json ./
+RUN npm ci
 
 # Copiar todo el proyecto
 COPY . .

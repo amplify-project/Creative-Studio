@@ -2,7 +2,6 @@
 # gitignore pattern. The .env files are tracked anyway, so ignoring them here
 # would have no effect: gitignore does not apply to files already in the index.
 server/.env
-package-lock.json
 /server/agents/.venv
 /server/agents/dataCollection/__pycache__
 **/__pycache__/
