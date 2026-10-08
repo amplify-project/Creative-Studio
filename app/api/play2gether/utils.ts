@@ -36,6 +36,9 @@ export interface Play2GetherParticipant {
    *  the take by this much (adelay) to stop it running ahead of the reference.
    *  Absent/0 on takes recorded before the prewarm change. */
   captureDelayMs?: number;
+  /** Test takes only: a file sent instead of the mic, delayed by this much to
+   *  simulate output latency. The correct Sync value for the take. */
+  simulatedLatencyMs?: number;
   uploadedAt: number;
   /**
    * Sequential take number for this participant within the session. 1 = first
