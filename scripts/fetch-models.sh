@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Fetch the two third-party ONNX models the assistant's audio analysis needs.
+# Fetch the third-party ONNX models: the two the assistant's audio analysis
+# needs, and the beat tracker behind the P2G mixer's pulse grid.
 #
 # They are not in the repository: together they are 97 MB of weights that
 # belong to Google and to Descript, and redistributing them inside this GPLv3
@@ -15,13 +16,15 @@
 
 set -euo pipefail
 
-DEST="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/server/agents/assistantHost/audioAnalysis"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEST="$ROOT/server/agents/assistantHost/audioAnalysis"
 BASE_URL="${MODELS_BASE_URL:-https://github.com/amplify-project/Creative-Studio/releases/download/models-v1}"
 
-# name  sha256  bytes
+# name  sha256  bytes  [directory, relative to the repo; default: the assistant's]
 MODELS=(
   "yamnet_model.onnx b96e5ca9359eb99ba3e8e372729bd61ef24274c8aa0d53022bbbfb04388a4527 16093366"
   "dac_encoder.onnx  a1c803f21d3587f38ae97ed770eb553522e4946959fb2c42270e217d52c3b13a 86112298"
+  "beat_this_small0.onnx 2cad8d23795432d66de48f2dccffa22448affb9886e1881f0662b76019c14653 11894174 scripts/models"
 )
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -43,7 +46,9 @@ for entry in "${MODELS[@]}"; do
   # shellcheck disable=SC2086
   set -- $entry
   name="$1"; want="$2"; size="$3"
-  target="$DEST/$name"
+  dir="$DEST"; [ -n "${4:-}" ] && dir="$ROOT/$4"
+  mkdir -p "$dir"
+  target="$dir/$name"
 
   if [ -f "$target" ] && [ "$(checksum "$target")" = "$want" ]; then
     echo "ok      $name (already present)"
@@ -77,6 +82,6 @@ for entry in "${MODELS[@]}"; do
 done
 
 echo
-echo "Models are in server/agents/assistantHost/audioAnalysis/."
-echo "Licences: YAMNet is Apache-2.0 (Google), the DAC encoder is MIT (Descript)."
-echo "See that folder's README.md for provenance."
+echo "Models are in server/agents/assistantHost/audioAnalysis/ and scripts/models/."
+echo "Licences: YAMNet is Apache-2.0 (Google), the DAC encoder is MIT (Descript),"
+echo "Beat This! is MIT (JKU Linz). See each folder's README.md for provenance."

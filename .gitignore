@@ -73,6 +73,9 @@ CLAUDE.md
 # tracked: nothing public can reproduce those.
 /server/agents/assistantHost/audioAnalysis/yamnet_model.onnx
 /server/agents/assistantHost/audioAnalysis/dac_encoder.onnx
+# Beat This! small (JKU Linz, MIT), exported to ONNX by
+# scripts/export-beat-this-onnx.py; fetched like the two above.
+/scripts/models/*.onnx
 
 # Was tracked until 2026-10; now generated per install into server/.env.
 server/mongo/mongo-keyfile

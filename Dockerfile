@@ -13,7 +13,10 @@ WORKDIR /app
 # analyser moves into TypeScript (the DSP is ~400 lines and the fixtures can
 # prove the port equal); if it does not, both this and the script come out. See
 # the "Where this runs" section of doc 12.
-RUN apk add --no-cache ffmpeg python3 py3-numpy
+# py3-onnxruntime: the reference's pulse grid (scripts/p2g_beat_grid.py, Beat
+# This! as ONNX). Alpine's own build, because pip has no musl wheel for it.
+# ~130 MB; measured 26 s of one core per five minutes of reference.
+RUN apk add --no-cache ffmpeg python3 py3-numpy py3-onnxruntime
 # Exact dependency versions from the lockfile. `npm i` against package.json's
 # ^ranges re-resolved everything on each build: on 2026-10-06 a rebuild pulled
 # livekit-client 2.22.3 onto a LiveKit server it no longer negotiated with
