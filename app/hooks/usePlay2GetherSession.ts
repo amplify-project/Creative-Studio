@@ -7,6 +7,10 @@ import { useSharedStateContext } from "./useSharedState";
 import { holdRemoteAudio, outputNode, routeElement, unrouteElement } from "../utils/outputBus";
 import { p2gLog, withNet, median, type ClockStats } from "../lib/p2gTelemetry";
 import { SYNC_BPM, SYNC_JITTER_MS, syncBeatMs, syncRoundDurationSec } from "../lib/p2gSync";
+import {
+  CAPTURE_DONE_TIMEOUT_MS, captureGapFields, readTrackAudioStats, trackDropFields,
+  type CaptureStats, type TrackAudioStatsSnapshot,
+} from "../lib/p2gCaptureStats";
 // The acoustic measurement itself. Imported from the component module because
 // that is where it has always lived and where the self-serve button still calls
 // it — one definition of the measurement, two ways to start it. The dependency
@@ -1221,6 +1225,21 @@ export function usePlay2GetherSession(
   } | null>(null);
   /** What the mic itself reports, next to the rate the context actually ran at. */
   const trackSampleRateRef = useRef<number | null>(null);
+  /**
+   * Resolves once the worklet has shipped the last samples of the take (its
+   * `done` reply to `stop`), or after a timeout. `doUpload` waits on it: the
+   * teardown and the upload fire on the same phase change, and reading the
+   * chunks before the tail arrives is what used to cut 0–100 ms off the end
+   * of every take.
+   */
+  const captureDoneRef = useRef<Promise<void> | null>(null);
+  const captureDoneResolveRef = useRef<(() => void) | null>(null);
+  /** The worklet's gap counters for the take, from its `done` message. */
+  const captureStatsRef = useRef<CaptureStats | null>(null);
+  /** The mic track the recorder reads, and its `stats` at the clap (Chrome only). */
+  const recTrackRef = useRef<MediaStreamTrack | null>(null);
+  const trackStatsStartRef = useRef<TrackAudioStatsSnapshot | null>(null);
+  const trackStatsEndRef = useRef<TrackAudioStatsSnapshot | null>(null);
   const [calibratedLatencyMs, setCalibratedLatencyMs] = useState<number | null>(() => {
     if (typeof window === "undefined") return null;
     const stored = window.localStorage.getItem(CALIBRATED_LATENCY_KEY);
@@ -1308,6 +1327,10 @@ export function usePlay2GetherSession(
     chunksRef.current = [];
     chunksClapAtRef.current = null;
     takeClockRef.current = null;
+    captureStatsRef.current = null;
+    trackStatsStartRef.current = null;
+    trackStatsEndRef.current = null;
+    captureDoneRef.current = null;
 
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1393,9 +1416,13 @@ export function usePlay2GetherSession(
       chunksRef.current = [];
       chunksClapAtRef.current = clapAt;
       trackSampleRateRef.current = rawTrack.getSettings().sampleRate ?? null;
+      recTrackRef.current = rawTrack;
       workletNode.port.onmessage = (e) => {
         if (e.data instanceof Float32Array) {
           chunksRef.current.push(e.data);
+        } else if (e.data && e.data.type === "done") {
+          if (e.data.started) captureStatsRef.current = e.data as CaptureStats;
+          captureDoneResolveRef.current?.();
         }
       };
 
@@ -1518,6 +1545,7 @@ export function usePlay2GetherSession(
         wallStart: performance.now(),
         ctxEnd: null, wallEnd: null,
       };
+      trackStatsStartRef.current = readTrackAudioStats(recTrackRef.current);
       node.port.postMessage({ cmd: "start" });
       console.log(`[play2gether/sync] capture start gated at +${startedAt - localClapAt}ms from clap (Δcap)`);
       // Not during a sync round. On speakers this burst lands in the take as a
@@ -1540,19 +1568,33 @@ export function usePlay2GetherSession(
     // Stop the gate first (so a late quantum can't append past the take), then
     // tear the graph down. Reset the per-round guards so the next clapAt
     // prewarms afresh.
+    //
+    // The worklet answers `stop` with the partial buffer and then `done`, so
+    // the graph is only torn down once the take's last samples are in
+    // `chunksRef` — `doUpload` waits on the same promise. The timeout covers a
+    // context that stopped rendering (interrupted, closed under us): better a
+    // take missing its tail than a take that never uploads.
+    const ctx = recCtxRef.current;
+    captureDoneRef.current = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, CAPTURE_DONE_TIMEOUT_MS);
+      captureDoneResolveRef.current = () => { clearTimeout(timer); resolve(); };
+    }).then(() => {
+      captureDoneResolveRef.current = null;
+      node.port.onmessage = null;
+      node.disconnect();
+      ctx?.close().catch(() => {});
+    });
     node.port.postMessage({ cmd: "stop" });
-    // Read the recorder's clock before the context is closed below. Its
-    // elapsed time against the wall clock is what tells a take that lost
-    // render callbacks (context behind the wall) from one that lost samples
-    // some other way.
-    if (takeClockRef.current && recCtxRef.current) {
-      takeClockRef.current.ctxEnd = recCtxRef.current.currentTime;
+    // Read the recorder's clock before the context is closed. Its elapsed time
+    // against the wall clock is what tells a take that lost render callbacks
+    // (context behind the wall) from one that lost samples some other way.
+    if (takeClockRef.current && ctx) {
+      takeClockRef.current.ctxEnd = ctx.currentTime;
       takeClockRef.current.wallEnd = performance.now();
     }
-    node.port.onmessage = null;
-    node.disconnect();
+    trackStatsEndRef.current = readTrackAudioStats(recTrackRef.current);
+    recTrackRef.current = null;
     recorderRef.current = null;
-    recCtxRef.current?.close().catch(() => {});
     recCtxRef.current = null;
     prewarmingRef.current = false;
     setPrewarmedClapAt(null);
@@ -1662,8 +1704,10 @@ export function usePlay2GetherSession(
   }, [capture, p2g.status, p2g.clapAt, p2g.metronomeBpm, p2g.recordingDuration, p2g.roundKind,
       p2g.syncSeed, p2g.syncJitterMs, isLocalTarget, offset]);
 
-  const doUpload = useCallback(() => {
+  const doUpload = useCallback(async () => {
     if (!p2g.sessionId) return;
+    // The take's tail is still in flight from the worklet until this settles.
+    if (captureDoneRef.current) await captureDoneRef.current;
     const identity   = room?.localParticipant.identity ?? "unknown";
     const displayName = room?.localParticipant.name || identity;
     // Belt and braces for the prewarm's clear: never upload samples recorded
@@ -1735,6 +1779,8 @@ export function usePlay2GetherSession(
       ctxElapsedMs,
       wallElapsedMs,
       ctxLagMs: ctxElapsedMs != null && wallElapsedMs != null ? wallElapsedMs - ctxElapsedMs : null,
+      ...captureGapFields(captureStatsRef.current),
+      ...trackDropFields(trackStatsStartRef.current, trackStatsEndRef.current),
       capturedMs,
       expectedMs,
       shortfallMs: expectedMs - capturedMs,
