@@ -54,6 +54,18 @@ is ±0.45 beat around it (never used as a value — the discipline of docs 11/12
 so the lag and the lag one beat over cannot both fit. Blind it searches ±400 ms,
 which at fast tempos holds more than one beat.
 
+**Without a calibration, the take's own DTW is the centre** (`centredOn:
+"dtw"`; only a DTW of the same take file with MAD ≤ 80 ms). The DTW finds the
+beat, the pulse places the take on it. The client therefore runs `align` BEFORE
+`beatgrid`, not in parallel. Measured 2026-10-09 on the martain reference (12 s,
+swung, the tracker's grid at "223 BPM" with only 42 % regular gaps), take 2
+shifted by a known 0/50/120/200 ms: blind, +120 and +200 wrapped a beat out to
+−386/−390; centred on the DTW (−35/17/87/162), the pulse gave −31/20/90/167
+against −31/19/89/169 wanted, all `clear` (runner-up 0.64–0.69). Being near the
+DTW is then expected, not a second opinion, so the row says "refines DTW"
+instead of "agrees with DTW": a DTW a beat out drags the pulse with it.
+`--expect` is "given or not", not "> 0" — a DTW figure can be negative.
+
 **No pulse** (free intro, rubato, a 6-s phrase): fewer than 8 beats → refused.
 `regularPct` (share of beat gaps within 15 % of the median) is shown in the
 status line; under 60 % says "irregular tempo, trust it less".

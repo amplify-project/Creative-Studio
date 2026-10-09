@@ -211,6 +211,9 @@ export interface Play2GetherBeatGrid {
   clear: boolean;
   candidates: { offsetMs: number; score: number }[];
   centred: boolean;
+  /** What the search was centred on. "dtw" = this take's own DTW figure, so
+   *  the two agreeing is NOT independent evidence. Absent on older results. */
+  centredOn?: "calibration" | "sync" | "dtw" | null;
   atWindowEdge: boolean;
   bpm: number | null;
   takeFile: string;

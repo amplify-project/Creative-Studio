@@ -708,7 +708,13 @@ function PulseResult({ grid, slider, onOffsetChange, agree }: {
         + `try the alternatives by ear.`,
     });
   }
-  if (agree) {
+  const onDtw = grid.centredOn === "dtw";
+  if (onDtw) {
+    flags.push({ label: "refines DTW", strong: false,
+      title: "No calibration or sync round, so the search looked half a beat either side of this "
+        + "take's DTW figure: the DTW finds the beat, the pulse places the take on it. Being near "
+        + "the DTW is therefore expected, not a second opinion — if the DTW is a beat out, so is this." });
+  } else if (agree) {
     flags.push({ label: "agrees with DTW", strong: false,
       title: "Two independent methods put this take within 35 ms of each other." });
   }
@@ -718,8 +724,8 @@ function PulseResult({ grid, slider, onOffsetChange, agree }: {
   }
   if (!grid.centred) {
     flags.push({ label: "blind", strong: false,
-      title: "No calibration or sync round to centre the search on, so it looked ±400 ms. With a "
-        + "measurement it looks only half a beat either side of it, which rules out being a beat out." });
+      title: "No calibration, sync round or usable DTW to centre the search on, so it looked ±400 ms. "
+        + "With a centre it looks only half a beat either side of it, which rules out being a beat out." });
   }
   return (
     <div className="flex flex-col gap-1">
@@ -2253,6 +2259,8 @@ type ServerBeatGrid = {
   clear: boolean;
   candidates: { offsetMs: number; score: number }[];
   centred: boolean;
+  /** "dtw" = searched around this take's own DTW figure (no calibration). */
+  centredOn?: "calibration" | "sync" | "dtw" | null;
   atWindowEdge: boolean;
   bpm: number | null;
   takeFile: string;
@@ -2504,12 +2512,12 @@ export default function Play2GetherHostPanel({
         body: JSON.stringify({ sessionId: p2g.sessionId, participantId: takeKey }),
       }).then(async (r) => ({ ok: r.ok, data: await r.json() }))
         .catch((e) => ({ ok: false, data: { reason: String(e) } }));
-      // Both methods at once: they are independent, and the row is most useful
-      // when it can say whether they agree. Either may fail alone.
-      const [gridRes, res] = await Promise.all([
-        post("/api/play2gether/beatgrid"),
-        post("/api/play2gether/align"),
-      ]);
+      // DTW first, then the pulse: without a calibration or sync round the
+      // server centres the pulse search on this take's fresh DTW figure (blind,
+      // it lands a beat out on fast material — beatgrid/route.ts). The DTW
+      // result is stored before its response returns. Either may fail alone.
+      const res = await post("/api/play2gether/align");
+      const gridRes = await post("/api/play2gether/beatgrid");
       const take = serverSession.participants[takeKey];
       if (gridRes.ok && gridRes.data.ok) {
         const g = gridRes.data;
@@ -2520,7 +2528,8 @@ export default function Play2GetherHostPanel({
             [takeKey]: {
               name: take?.name ?? takeKey, offsetMs: g.offsetMs, lagMs: g.lagMs,
               aliasRatio: g.aliasRatio, clear: g.clear === true, candidates: g.candidates ?? [],
-              centred: g.centred === true, atWindowEdge: g.atWindowEdge === true, bpm: g.bpm ?? null,
+              centred: g.centred === true, centredOn: g.centredOn ?? null,
+              atWindowEdge: g.atWindowEdge === true, bpm: g.bpm ?? null,
               takeFile: take?.file ?? "", measuredAt: Date.now(),
             },
           },

@@ -278,8 +278,9 @@ def cmd_align(a):
     # With a measurement to centre on, search only half a beat either side of
     # it: the lag and the lag one beat over cannot both fit, so the answer is
     # unique. Blind, ±400 ms — which on fast music holds more than one beat,
-    # and the alias check below is what says so.
-    centred = a.expect > 0
+    # and the alias check below is what says so. The centre may be negative (a
+    # DTW figure for a take that leads), so "given" is the test, not "> 0".
+    centred = a.expect is not None
     if centred:
         half = min(0.4, 0.45 * period)
         lo, hi = a.expect / 1000 - half, a.expect / 1000 + half
@@ -319,7 +320,8 @@ def main():
     al.add_argument("reference")
     al.add_argument("take")
     al.add_argument("--cache", required=True)
-    al.add_argument("--expect", type=float, default=0.0, help="ms; centres the search, never used as a value")
+    al.add_argument("--expect", type=float, default=None,
+                    help="ms on the lag axis; centres the search, never used as a value. Omit for a blind search")
     al.add_argument("--capture-delay", type=float, default=0.0)
     a = ap.parse_args()
 

@@ -5,7 +5,7 @@ import { spawn } from "child_process";
 import { existsSync } from "fs";
 import { authOptions } from "../../auth/auth";
 import {
-  Play2GetherSession, readSession, writeSession, withSessionLock, sessionDir,
+  Play2GetherSession, Play2GetherBeatGrid, readSession, writeSession, withSessionLock, sessionDir,
 } from "../utils";
 
 /**
@@ -32,6 +32,10 @@ import {
  *  py3-onnxruntime: 26 s for 300 s of audio. This ceiling is a runaway
  *  detector for a ~15-minute reference, not a budget. */
 const GRID_TIMEOUT_MS = 180_000;
+
+/** A DTW result is a centre for the pulse search only below this MAD — the
+ *  same ceiling the agreement rule uses (memory: p2g-dtw-alignment). */
+const DTW_CENTRE_MAX_MAD_MS = 80;
 
 type ScriptResult = { ok: boolean; reason?: string; [k: string]: unknown };
 
@@ -172,19 +176,35 @@ export async function POST(req: NextRequest) {
   const grid = await ensureGrid(ref, cache);
   if (!grid.ok) return NextResponse.json({ ok: false, reason: grid.reason });
 
-  // Centre on a measurement when there is one — the same sources, in the same
-  // order, as the DTW (align/route.ts). Never used as a value.
+  // Centre on a measurement when there is one — never used as a value. The
+  // calibration and sync round first, as for the DTW (align/route.ts). Without
+  // either, this take's own DTW result: on fast or swung material a blind
+  // ±400 ms search holds two or three beats and lands one beat out, while
+  // half a beat around a figure that is ±60 ms right is unique (2026-10-09,
+  // martain reference at 223 BPM: blind wrapped +120 to -386; centred on the
+  // DTW, every shift within 2 ms). So the client runs the DTW first.
   const pid = participant.participantId ?? participantId;
-  const expectMs = meta.calibOffsets?.[pid]?.latencyMs ?? meta.syncOffsets?.[pid]?.offsetMs ?? 0;
+  const dtw = meta.alignments?.[participantId];
+  const calibMs = meta.calibOffsets?.[pid]?.latencyMs;
+  const syncMs = meta.syncOffsets?.[pid]?.offsetMs;
+  let expectMs: number | null = null;
+  let centredOn: Play2GetherBeatGrid["centredOn"] = null;
+  if (calibMs != null && calibMs > 0) { expectMs = calibMs; centredOn = "calibration"; }
+  else if (syncMs != null && syncMs > 0) { expectMs = syncMs; centredOn = "sync"; }
+  // Only a DTW of THIS take, and only one that describes it with one number:
+  // past 80 ms of MAD the DTW has not found the take (doc 12).
+  else if (dtw && dtw.takeFile === participant.file && dtw.madMs <= DTW_CENTRE_MAX_MAD_MS) {
+    expectMs = dtw.lagMs; centredOn = "dtw";
+  }
 
   const started = Date.now();
   const r = await runScript([
     analyser(), "align", ref, join(dir, participant.file), "--cache", cache,
-    "--expect", String(Math.round(expectMs)),
+    ...(expectMs != null ? ["--expect", String(Math.round(expectMs))] : []),
     "--capture-delay", String(Math.round(participant.captureDelayMs ?? 0)),
   ]);
   const tookMs = Date.now() - started;
-  console.log(`[p2g/beatgrid] ${participantId} expect=${Math.round(expectMs)}ms -> ` +
+  console.log(`[p2g/beatgrid] ${participantId} expect=${expectMs != null ? `${Math.round(expectMs)}ms (${centredOn})` : "blind"} -> ` +
     (r.ok ? `offset=${r.offsetMs}ms alias=${r.aliasRatio}` : `refused: ${r.reason}`) + ` (${tookMs} ms)`);
   if (!r.ok) return NextResponse.json({ ok: false, reason: r.reason ?? "analysis failed" });
 
@@ -196,6 +216,7 @@ export async function POST(req: NextRequest) {
     clear: r.clear === true,
     candidates: (r.candidates as { offsetMs: number; score: number }[]) ?? [],
     centred: r.centred === true,
+    centredOn,
     atWindowEdge: r.atWindowEdge === true,
     bpm: (r.bpm as number | null) ?? null,
     takeFile: participant.file,
