@@ -15,14 +15,15 @@ export async function GET(
   });
 
   if (!s) return new NextResponse("Session not found", { status: 404 });
-  console.log(s);
   if (!s.startAt) return new NextResponse("No start date", { status: 400 });
 
-  // Convert times to calendar format
-  const start = s.startAt.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
-  const end = s.endAt
-    ? s.endAt.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z"
-    : start;
+  // iCalendar UTC (yyyyMMddTHHmmssZ). Sessions have no end time yet: an hour,
+  // not DTEND = DTSTART, which calendars show as a zero-length event.
+  const toIcs = (d: Date) => d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+  const start = toIcs(s.startAt);
+  const end = toIcs(s.endAt ?? new Date(s.startAt.getTime() + 60 * 60 * 1000));
+  // When this file was generated, as RFC 5545 means it — not the event start.
+  const stamp = toIcs(new Date());
 
   // Base URL
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
@@ -49,7 +50,7 @@ export async function GET(
     const ics = [
       "BEGIN:VEVENT",
       `UID:${s.id}-${r.user.email}`,
-      `DTSTAMP:${start}`,
+      `DTSTAMP:${stamp}`,
       `DTSTART:${start}`,
       `DTEND:${end}`,
       `SUMMARY:${s.name}`,

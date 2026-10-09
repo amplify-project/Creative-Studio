@@ -4,9 +4,9 @@ import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { prisma } from "../../../dbbackend/prisma";
 import { requireHostOfSpace } from "../../../dbbackend/rbac";
-import { format } from "date-fns";
 import jwt from "jsonwebtoken";
 import CopyLinkButton from "../../../../components/ui/CopyLinkButton";
+import LocalDateTimeInput from "../../../../components/ui/LocalDateTimeInput";
 
 type Params = { spaceId: string };
 const norm = (v: unknown) => String(v ?? "").trim();
@@ -18,9 +18,13 @@ async function createSession(spaceId: string, formData: FormData) {
   await requireHostOfSpace(spaceId);
 
   const name = String(formData.get("name") || "").trim();
+  // An ISO instant in UTC, converted in the host's browser (LocalDateTimeInput):
+  // a zone-less "2026-10-09T18:00" parsed here would be read in the server's
+  // zone (UTC in Docker) and land 1-2 h off for hosts in Spain or the UK.
   const startAtRaw = String(formData.get("startAt") || "").trim();
   const startAt = startAtRaw ? new Date(startAtRaw) : undefined;
   if (!name) throw new Error("Name required");
+  if (startAt && Number.isNaN(startAt.getTime())) throw new Error("Invalid start date");
 
   const assistantEnabled = formData.get("assistantEnabled") === "on";
 
@@ -167,17 +171,27 @@ function buildInviteUrl(session: any) {
   return `${baseUrl}/signin?invite=${token}`;
 }
 
+/** Sessions have no end time yet; calendars get this length. */
+const DEFAULT_SESSION_MS = 60 * 60 * 1000;
+
+/** 2026-10-09T16:00:00.000Z -> 20261009T160000Z (Google Calendar / iCalendar UTC). */
+function toCalendarUtc(d: Date) {
+  return d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+}
+
 function buildGoogleCalendarLink(session: any) {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
   const inviteUrl = buildInviteUrl(session);
 
-  // 🔹 Convertir fechas a formato Google Calendar (UTC)
-  const start = session.startAt
-    ? format(new Date(session.startAt), "yyyyMMdd'T'HHmmss'Z'")
-    : format(new Date(), "yyyyMMdd'T'HHmmss'Z'");
-  const end = session.endAt
-    ? format(new Date(session.endAt), "yyyyMMdd'T'HHmmss'Z'")
-    : format(new Date(session.startAt + 60 * 60 * 1000), "yyyyMMdd'T'HHmmss'Z'");
+  // Google Calendar wants UTC as yyyyMMddTHHmmssZ. From toISOString, not
+  // date-fns `format`: format prints the SERVER's local time with a literal
+  // 'Z' stuck on, right only while the server happens to run in UTC.
+  const startDate = session.startAt ? new Date(session.startAt) : new Date();
+  const endDate = session.endAt
+    ? new Date(session.endAt)
+    : new Date(startDate.getTime() + DEFAULT_SESSION_MS);
+  const start = toCalendarUtc(startDate);
+  const end = toCalendarUtc(endDate);
 
   // 🔹 Datos base del evento
   const title = encodeURIComponent(session.name);
@@ -255,7 +269,7 @@ export default async function SessionsPage({
         </div>
         <div className="flex flex-col">
           <label className="text-sm">Start at</label>
-          <input className="input" type="datetime-local" name="startAt" required />
+          <LocalDateTimeInput className="input" name="startAt" required />
         </div>
         <div className="flex flex-col">
           <label className="text-sm">AI assistant</label>
