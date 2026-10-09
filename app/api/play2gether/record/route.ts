@@ -68,6 +68,14 @@ export async function POST(req: NextRequest) {
   // playing quarter notes, uploaded to be MEASURED rather than mixed. It never
   // enters `meta.participants` — see the sync branch below.
   const kind = url.searchParams.get("kind") === "sync" ? "sync" : "take";
+  // Present only on a test take (a file sent instead of the mic, delayed by
+  // this much — see app/lib/p2gTestTrack.ts). Stored so the mixer can show the
+  // right answer next to every measurement. Clamped like captureDelayMs.
+  const simulatedRaw = url.searchParams.get("simulatedLatencyMs");
+  const simulatedParsed = simulatedRaw != null ? parseInt(simulatedRaw, 10) : NaN;
+  const simulatedLatencyMs = Number.isFinite(simulatedParsed)
+    ? Math.min(2000, Math.max(0, simulatedParsed))
+    : undefined;
 
   if (!sessionId || !participantId) {
     return NextResponse.json(
@@ -395,6 +403,7 @@ export async function POST(req: NextRequest) {
         clapOffset,
         calibrated,
         captureDelayMs,
+        simulatedLatencyMs,
         // How loud this take is, from the same decode the envelopes came from.
         // `undefined` rather than null when the measurement failed, so it reads
         // the same as a take recorded before this existed and the mixer has one
@@ -415,6 +424,7 @@ export async function POST(req: NextRequest) {
       // changed. It then showed a number measured from a take that no longer
       // exists, and — because the row only offers the Align button when there
       // is nothing to show — no way to measure the new one.
+      if (meta.beatGrids?.[takeKey]) delete meta.beatGrids[takeKey];
       if (meta.alignments && meta.alignments[takeKey]) {
         delete meta.alignments[takeKey];
       }
@@ -483,6 +493,7 @@ export async function DELETE(req: NextRequest) {
     // behind is how a re-recorded take inherits the previous one's number (see
     // the note in POST).
     if (meta.alignments?.[participantId]) delete meta.alignments[participantId];
+    if (meta.beatGrids?.[participantId]) delete meta.beatGrids[participantId];
     await writeSession(meta);
   }
 

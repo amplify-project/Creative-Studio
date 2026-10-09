@@ -306,8 +306,10 @@ function drawEnvelopeColumns(
 function TakeWaveform({
   url, peaksUrl, binUrl, referenceUrl, referencePeaksUrl,
   offsetMs = 0, captureDelayMs = 0, height = 40, isReference = false,
-  view, totalSec, onView, onNudge, playheadSec,
+  view, totalSec, onView, onNudge, playheadSec, pulse,
 }: {
+  /** The reference's pulse, drawn behind the envelope when known. */
+  pulse?: PulseGrid | null;
   url?: string;
   peaksUrl?: string;
   /** High-resolution sidecar for `url`, when the take has one. */
@@ -379,6 +381,10 @@ function TakeWaveform({
       ctx.fillRect(Math.round((t - view.startSec) * pxPerSec), 0, 1, H);
     }
 
+    // The pulse goes under everything: it is the ruler, the envelopes are what
+    // is being measured against it. Drawn on the mix timeline, so a take lines
+    // up with it exactly when its attacks land on the reference's beats.
+    if (pulse) drawPulseGrid(ctx, pulse, view, W, H);
     if (ref) {
       drawEnvelopeColumns(ctx, columnsFor(ref, 0, view, W), mid, halfH,
         { fill: "rgba(143,150,249,0.16)" });
@@ -394,7 +400,7 @@ function TakeWaveform({
       drawEnvelopeColumns(ctx, columnsFor(ref, 0, view, W), mid, halfH,
         { stroke: "rgba(165,172,255,0.95)", lineWidth: 1.5 });
     }
-  }, [take, ref, netDelayMs, w, height, isReference, view]);
+  }, [take, ref, netDelayMs, w, height, isReference, view, pulse]);
 
   useEffect(() => {
     const canvas = headRef.current;
@@ -597,50 +603,54 @@ function DriftSpark({ drift, height = 20 }: {
  * What it is worth having anyway: it is the only one of the three that measures
  * the take rather than a proxy for it, and the only one that can show drift.
  */
-function AlignRow({ alignment, onAnalyse, analysing, takeFile, takeUploadedAt, slider, onOffsetChange }: {
+function AlignRow({ alignment, beatGrid, onAnalyse, analysing, takeFile, takeUploadedAt, slider, onOffsetChange }: {
   alignment?: ServerAlignment;
+  beatGrid?: ServerBeatGrid;
   onAnalyse?: () => void;
   analysing?: boolean;
   takeFile?: string;
-  /** When the take under this row arrived. See `stale`. */
+  /** When the take under this row arrived. See `isStale`. */
   takeUploadedAt?: number;
   slider: number;
   onOffsetChange?: (ms: number) => void;
 }) {
   if (!onAnalyse) return null;
 
-  // A stored alignment describes the take it was computed from.
+  // A stored measurement describes the take it was computed from.
   //
   // Comparing FILENAMES is not enough and that was a real bug: take keys and
   // filenames are reused, so deleting a take and recording it again gives the
   // new performance the old one's name, the old alignment matched it, and the
   // row showed a number measured from audio that no longer existed — with no
   // Align button, because the button only appears when there is nothing to
-  // show. The upload time is the honest test: an alignment measured before the
-  // take arrived cannot be about that take. (The server now also drops the
-  // alignment when a take is deleted or replaced; this is the half that does
-  // not depend on the session having been rewritten.)
-  const stale = !!alignment && (
-    (!!takeFile && alignment.takeFile !== takeFile)
-    || (!!takeUploadedAt && alignment.measuredAt < takeUploadedAt)
+  // show. The upload time is the honest test: a measurement made before the
+  // take arrived cannot be about that take. (The server now also drops both
+  // when a take is deleted or replaced; this is the half that does not depend
+  // on the session having been rewritten.)
+  const isStale = (m?: { takeFile: string; measuredAt: number }) => !!m && (
+    (!!takeFile && m.takeFile !== takeFile)
+    || (!!takeUploadedAt && m.measuredAt < takeUploadedAt)
   );
+  const dtw = alignment && !isStale(alignment) ? alignment : undefined;
+  const grid = beatGrid && !isStale(beatGrid) ? beatGrid : undefined;
+  const stale = isStale(alignment) || isStale(beatGrid);
 
   if (analysing) {
     return (
       <span className="inline-flex items-center gap-1.5 self-start text-violet-300/80">
         <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-        Aligning this take against the reference…
+        Measuring this take against the reference…
       </span>
     );
   }
 
-  if (!alignment || stale) {
+  if (!dtw && !grid) {
     return (
       <button
         type="button"
         onClick={onAnalyse}
         className="inline-flex items-center gap-1.5 self-start text-left text-violet-300 hover:underline"
-        title="Warps this take against the reference and reports how late it sits, plus how that changes over the take. A couple of seconds."
+        title="Places this take on the reference's pulse, and warps it against the reference (DTW). A few seconds; the first take of a new reference waits for its pulse grid."
       >
         <Activity className="w-3 h-3 shrink-0" />
         {stale ? "Re-align this take (the take changed)" : "Align this take against the reference"}
@@ -648,6 +658,127 @@ function AlignRow({ alignment, onAnalyse, analysing, takeFile, takeUploadedAt, s
     );
   }
 
+  // Two independent methods agreeing is the strongest signal either can give.
+  // On the 2026-09 fixtures, "agree within 35 ms" beat either method alone on
+  // both yield and worst error (memory: p2g-dtw-alignment).
+  const agree = !!grid && !!dtw && Math.abs(grid.offsetMs - dtw.offsetMs) <= 35;
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {grid && (
+        <PulseResult grid={grid} slider={slider} onOffsetChange={onOffsetChange!} agree={agree} />
+      )}
+      {dtw ? (
+        <DtwResult alignment={dtw} slider={slider} onOffsetChange={onOffsetChange!} onAnalyse={onAnalyse} />
+      ) : (
+        <button type="button" onClick={onAnalyse}
+                className="inline-flex items-center gap-1.5 self-start text-[10px] text-zinc-500 hover:text-zinc-300">
+          <Activity className="w-3 h-3 shrink-0" /> also run DTW
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The pulse grid's placement of a take (see docs/llm/15-beat-grid.md).
+ *
+ * Coloured on AMBIGUITY, the same rule the DTW row follows for its scatter:
+ * an unclear result is one where the pulse and the off-beat (or one beat over)
+ * fit about equally, which happens on fast, dense material. Then the
+ * runner-up shifts are offered as well, because one of them is the answer and
+ * the host's ear is what tells which.
+ */
+function PulseResult({ grid, slider, onOffsetChange, agree }: {
+  grid: ServerBeatGrid;
+  slider: number;
+  onOffsetChange: (ms: number) => void;
+  agree: boolean;
+}) {
+  const applied = slider === clampToSlider(grid.offsetMs);
+  const fmt = (ms: number) => `${ms > 0 ? "+" : ""}${Math.round(ms)} ms`;
+  const others = grid.clear ? [] : grid.candidates.slice(1);
+  const flags: { label: string; title: string; strong: boolean }[] = [];
+  if (!grid.clear) {
+    flags.push({
+      label: "ambiguous",
+      strong: true,
+      title: `Another shift fits the pulse almost as well (runner-up at ${Math.round(grid.aliasRatio * 100)} % `
+        + `of the best). On fast or busy material the pulse and the off-beat look alike to this method — `
+        + `try the alternatives by ear.`,
+    });
+  }
+  const onDtw = grid.centredOn === "dtw";
+  if (onDtw) {
+    flags.push({ label: "refines DTW", strong: false,
+      title: "No calibration or sync round, so the search looked half a beat either side of this "
+        + "take's DTW figure: the DTW finds the beat, the pulse places the take on it. Being near "
+        + "the DTW is therefore expected, not a second opinion — if the DTW is a beat out, so is this." });
+  } else if (agree) {
+    flags.push({ label: "agrees with DTW", strong: false,
+      title: "Two independent methods put this take within 35 ms of each other." });
+  }
+  if (grid.atWindowEdge) {
+    flags.push({ label: "at the search edge", strong: true,
+      title: "The best shift sat against the edge of the search range, so the real delay may be larger." });
+  }
+  if (!grid.centred) {
+    flags.push({ label: "blind", strong: false,
+      title: "No calibration, sync round or usable DTW to centre the search on, so it looked ±400 ms. "
+        + "With a centre it looks only half a beat either side of it, which rules out being a beat out." });
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        onClick={() => onOffsetChange(clampToSlider(grid.offsetMs))}
+        disabled={applied}
+        className={`inline-flex items-center gap-1.5 self-start text-left rounded
+                    disabled:cursor-default enabled:hover:underline
+                    ${grid.clear ? "text-yellow-300" : "text-amber-300"}`}
+        title={`Shifting this take by ${fmt(grid.offsetMs)} lands the most of its attacks on the `
+          + `reference's beats${grid.bpm ? ` (${grid.bpm} BPM)` : ""}. Works across instruments: `
+          + `they sound nothing alike but play on the same pulse.`}
+      >
+        <Music2 className="w-3 h-3 shrink-0" />
+        Pulse grid {fmt(grid.offsetMs)}
+        {" · "}{applied ? "applied" : "apply"}
+      </button>
+      {others.length > 0 && (
+        <p className="text-[10px] text-zinc-400 flex flex-wrap items-center gap-x-1.5">
+          or
+          {others.map((c) => (
+            <button key={c.offsetMs} type="button"
+                    onClick={() => onOffsetChange(clampToSlider(c.offsetMs))}
+                    disabled={slider === clampToSlider(c.offsetMs)}
+                    className="text-amber-200/80 hover:underline disabled:no-underline disabled:text-zinc-500"
+                    title={`Fits ${Math.round(c.score * 100)} % as well as the best shift.`}>
+              {fmt(c.offsetMs)}
+            </button>
+          ))}
+        </p>
+      )}
+      {flags.length > 0 && (
+        <p className="text-[10px] leading-snug text-zinc-500 flex flex-wrap gap-x-1.5">
+          {flags.map((f, i) => (
+            <span key={f.label} className={f.strong ? "text-amber-200/70" : undefined} title={f.title}>
+              {i > 0 && <span className="text-zinc-700 mr-1.5">·</span>}
+              {f.label}
+            </span>
+          ))}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The DTW result for one take — see docs/llm/12-dtw-alignment.md. */
+function DtwResult({ alignment, slider, onOffsetChange, onAnalyse }: {
+  alignment: ServerAlignment;
+  slider: number;
+  onOffsetChange: (ms: number) => void;
+  onAnalyse: () => void;
+}) {
   const applied = slider === clampToSlider(alignment.offsetMs);
   // Colour on the SCATTER, never on the offset — the same rule the sync card
   // follows. A large offset is a slow monitoring path and is corrected exactly;
@@ -706,7 +837,7 @@ function AlignRow({ alignment, onAnalyse, analysing, takeFile, takeUploadedAt, s
     <div className="flex flex-col gap-1">
       <button
         type="button"
-        onClick={() => onOffsetChange!(clampToSlider(alignment.offsetMs))}
+        onClick={() => onOffsetChange(clampToSlider(alignment.offsetMs))}
         disabled={applied}
         className={`inline-flex items-center gap-1.5 self-start text-left rounded
                     disabled:cursor-default enabled:hover:underline
@@ -742,6 +873,70 @@ function AlignRow({ alignment, onAnalyse, analysing, takeFile, takeUploadedAt, s
       )}
     </div>
   );
+}
+
+/** The reference's pulse, from GET /api/play2gether/beatgrid. Seconds on the
+ *  reference's own timeline, which is the mix timeline. */
+type PulseGrid = { beats: number[]; downbeats: number[]; bpm: number | null; regularPct: number };
+type PulseGridState =
+  | { status: "none" | "computing" }
+  | { status: "failed"; reason: string }
+  | ({ status: "ready" } & PulseGrid);
+
+/**
+ * Poll the reference's pulse grid. The first request for a reference starts a
+ * ~25-second model run on the server; the route answers "computing" until the
+ * grid exists, so this keeps asking every few seconds and stops once it has an
+ * answer. Keyed on the reference URL: a new reference (upload, promote-mix) is
+ * a new grid.
+ */
+function usePulseGrid(sessionId: string | null | undefined, referenceUrl: string | null | undefined): PulseGridState {
+  const [state, setState] = useState<PulseGridState>({ status: "none" });
+  useEffect(() => {
+    if (!sessionId || !referenceUrl) { setState({ status: "none" }); return; }
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    setState({ status: "computing" });
+    const ask = async () => {
+      try {
+        const res = await fetch(`/api/play2gether/beatgrid?sessionId=${encodeURIComponent(sessionId)}`);
+        const data = await res.json();
+        if (!alive) return;
+        if (data.status === "ready") {
+          setState({ status: "ready", beats: data.beats ?? [], downbeats: data.downbeats ?? [],
+                     bpm: data.bpm ?? null, regularPct: data.regularPct ?? 0 });
+          return;
+        }
+        if (data.status === "failed") { setState({ status: "failed", reason: data.reason ?? "unknown" }); return; }
+        if (data.status === "none") { setState({ status: "none" }); return; }
+      } catch { /* network blip: ask again */ }
+      if (alive) timer = setTimeout(ask, 4000);
+    };
+    ask();
+    return () => { alive = false; if (timer) clearTimeout(timer); };
+  }, [sessionId, referenceUrl]);
+  return state;
+}
+
+/** Draw the pulse grid behind an envelope: every beat a faint line, every
+ *  downbeat a stronger one. Binary search to the first visible beat, so a long
+ *  reference costs only the lines on screen. */
+function drawPulseGrid(ctx: CanvasRenderingContext2D, grid: PulseGrid, view: TimeView, W: number, H: number) {
+  const pxPerSec = W / view.spanSec;
+  // Too dense to read at this zoom: show downbeats only, then nothing.
+  const showBeats = grid.beats.length < 2 || (grid.beats[1] - grid.beats[0]) * pxPerSec >= 4;
+  const draw = (times: number[], style: string) => {
+    let lo = 0, hi = times.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (times[mid] < view.startSec) lo = mid + 1; else hi = mid; }
+    ctx.fillStyle = style;
+    const end = view.startSec + view.spanSec;
+    for (let i = lo; i < times.length && times[i] <= end; i++) {
+      ctx.fillRect(Math.round((times[i] - view.startSec) * pxPerSec), 0, 1, H);
+    }
+  };
+  if (showBeats) draw(grid.beats, "rgba(250,204,21,0.16)");
+  const downSpacing = grid.downbeats.length > 1 ? (grid.downbeats[1] - grid.downbeats[0]) * pxPerSec : Infinity;
+  if (downSpacing >= 4) draw(grid.downbeats, "rgba(250,204,21,0.38)");
 }
 
 /** Gridline spacing that keeps roughly 4–10 lines on screen at any zoom. */
@@ -1323,13 +1518,19 @@ function useMixPreview({ sources, onPlayhead }: {
  * readout, a gain fader with mute, an overflow menu (delete / use-as-layer), and
  * the take waveform with the reference silhouette overlaid as a visual sync aid.
  */
-function GainSlider({ name, takeNum, isReference, value, onChange, audioUrl, peaksUrl, peaksBinUrl, referenceUrl, referencePeaksUrl, captureDelayMs, onDelete, onUseAsRef, offsetMs, onOffsetChange, onOffsetNudge, syncOffset, calibOffset,
-  alignment, onAnalyse, analysing = false, takeFile, takeUploadedAt, levelDb, peakDb, compact = false, expanded = false, onToggleExpanded, view, totalSec, onView, playheadSec, onPlayhead }: {
+function GainSlider({ name, takeNum, simulatedLatencyMs, isReference, value, onChange, audioUrl, peaksUrl, peaksBinUrl, referenceUrl, referencePeaksUrl, captureDelayMs, onDelete, onUseAsRef, offsetMs, onOffsetChange, onOffsetNudge, syncOffset, calibOffset,
+  alignment, beatGrid, pulse, onAnalyse, analysing = false, takeFile, takeUploadedAt, levelDb, peakDb, compact = false, expanded = false, onToggleExpanded, view, totalSec, onView, playheadSec, onPlayhead }: {
+  /** Where this take's attacks land on the reference's pulse (server). */
+  beatGrid?: ServerBeatGrid;
+  /** The reference's pulse, drawn on the waveform. */
+  pulse?: PulseGrid | null;
   name: string; value: number; onChange: (v: number) => void;
   /** This row is the reference / backing track (styled violet, no take controls). */
   isReference?: boolean;
   /** 2+ when the same singer has multiple takes; shown as a "take N" badge. */
   takeNum?: number;
+  /** Test take: the simulated latency it was sent with, i.e. the right answer. */
+  simulatedLatencyMs?: number;
   audioUrl?: string; onDelete?: () => void; onUseAsRef?: () => void;
   /** Server-precomputed envelope for this take, when it has one. */
   peaksUrl?: string;
@@ -1460,6 +1661,15 @@ function GainSlider({ name, takeNum, isReference, value, onChange, audioUrl, pea
             take {takeNum}
           </span>
         ) : null}
+        {!isReference && simulatedLatencyMs != null && (
+          <span
+            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0"
+            title={`Test take: a file sent instead of a microphone, ${simulatedLatencyMs} ms late to simulate output latency. `
+              + `The correct Sync value is ${simulatedLatencyMs} ms — compare the calibration, DTW and your own ear against it.`}
+          >
+            test · sync {simulatedLatencyMs} ms
+          </span>
+        )}
 
         <span className="flex-1" />
 
@@ -1634,6 +1844,7 @@ function GainSlider({ name, takeNum, isReference, value, onChange, audioUrl, pea
           offsetMs={offsetMs ?? 0}
           captureDelayMs={captureDelayMs ?? 0}
           isReference={isReference}
+          pulse={pulse}
           height={isReference ? 44 : 56}
           view={view}
           totalSec={totalSec}
@@ -1751,7 +1962,7 @@ function GainSlider({ name, takeNum, isReference, value, onChange, audioUrl, pea
                   Worth re-running the calibration round for them.
                 </p>
               )}
-              <AlignRow alignment={alignment} onAnalyse={onAnalyse} analysing={analysing}
+              <AlignRow alignment={alignment} beatGrid={beatGrid} onAnalyse={onAnalyse} analysing={analysing}
                         takeFile={takeFile} takeUploadedAt={takeUploadedAt}
                         slider={slider} onOffsetChange={onOffsetChange} />
             </div>
@@ -1768,7 +1979,7 @@ function GainSlider({ name, takeNum, isReference, value, onChange, audioUrl, pea
                 round and this take re-seeds itself, align it by hand against the
                 reference contour above, or measure this take directly:
               </p>
-              <AlignRow alignment={alignment} onAnalyse={onAnalyse} analysing={analysing}
+              <AlignRow alignment={alignment} beatGrid={beatGrid} onAnalyse={onAnalyse} analysing={analysing}
                         takeFile={takeFile} takeUploadedAt={takeUploadedAt}
                         slider={slider} onOffsetChange={onOffsetChange} />
             </div>
@@ -1990,6 +2201,8 @@ type ServerParticipant = {
   /** Measured capture-start delay (ms) the mixer pads the take by — used to
    *  shift this take's waveform so the overlay matches the mixed alignment. */
   captureDelayMs?: number;
+  /** Test takes only — see app/lib/p2gTestTrack.ts. */
+  simulatedLatencyMs?: number;
   uploadedAt: number;
   takeNum?: number;
   participantId?: string;
@@ -2036,6 +2249,23 @@ type ServerAlignment = {
   takeFile: string;
   measuredAt: number;
 };
+/** Where a take's attacks land on the reference's pulse. Keyed like
+ *  ServerAlignment. See docs/llm/15-beat-grid.md. */
+type ServerBeatGrid = {
+  name: string;
+  offsetMs: number;
+  lagMs: number;
+  aliasRatio: number;
+  clear: boolean;
+  candidates: { offsetMs: number; score: number }[];
+  centred: boolean;
+  /** "dtw" = searched around this take's own DTW figure (no calibration). */
+  centredOn?: "calibration" | "sync" | "dtw" | null;
+  atWindowEdge: boolean;
+  bpm: number | null;
+  takeFile: string;
+  measuredAt: number;
+};
 type ServerReady = { name: string };
 type ServerFailure = { name: string; reason: string; clapAt: number | null; at: number };
 type ServerSession = {
@@ -2049,6 +2279,8 @@ type ServerSession = {
   calibOffsets?: Record<string, ServerCalibOffset>;
   /** Keyed by TAKE, unlike the two above. See ServerAlignment. */
   alignments?: Record<string, ServerAlignment>;
+  /** Keyed by TAKE, like `alignments`. */
+  beatGrids?: Record<string, ServerBeatGrid>;
   /** Master gain applied to the last render, and the peak it was measured
    *  from. Shown under the master player so the output level is a number the
    *  host can see rather than a surprise. */
@@ -2255,6 +2487,10 @@ export default function Play2GetherHostPanel({
 
   // Polled server session (participant uploads + readiness)
   const [serverSession, setServerSession] = useState<ServerSession>({ participants: {}, ready: {} });
+  // The reference's pulse, drawn on every strip. Polled until the server has
+  // built it (once per reference file).
+  const pulseState = usePulseGrid(p2g.sessionId, p2g.referenceUrl);
+  const pulse = pulseState.status === "ready" ? pulseState : null;
   // Takes with a DTW analysis in flight. A Set rather than a boolean: the host
   // can fire several and they run independently on the server.
   const [analysing, setAnalysing] = useState<Set<string>>(new Set());
@@ -2270,17 +2506,46 @@ export default function Play2GetherHostPanel({
     if (!p2g.sessionId || analysing.has(takeKey)) return;
     setAnalysing((prev) => new Set(prev).add(takeKey));
     try {
-      const res = await fetch("/api/play2gether/align", {
+      const post = (url: string) => fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: p2g.sessionId, participantId: takeKey }),
-      });
-      const data = await res.json();
+      }).then(async (r) => ({ ok: r.ok, data: await r.json() }))
+        .catch((e) => ({ ok: false, data: { reason: String(e) } }));
+      // DTW first, then the pulse: without a calibration or sync round the
+      // server centres the pulse search on this take's fresh DTW figure (blind,
+      // it lands a beat out on fast material — beatgrid/route.ts). The DTW
+      // result is stored before its response returns. Either may fail alone.
+      const res = await post("/api/play2gether/align");
+      const gridRes = await post("/api/play2gether/beatgrid");
+      const take = serverSession.participants[takeKey];
+      if (gridRes.ok && gridRes.data.ok) {
+        const g = gridRes.data;
+        setServerSession((prev) => ({
+          ...prev,
+          beatGrids: {
+            ...(prev.beatGrids ?? {}),
+            [takeKey]: {
+              name: take?.name ?? takeKey, offsetMs: g.offsetMs, lagMs: g.lagMs,
+              aliasRatio: g.aliasRatio, clear: g.clear === true, candidates: g.candidates ?? [],
+              centred: g.centred === true, centredOn: g.centredOn ?? null,
+              atWindowEdge: g.atWindowEdge === true, bpm: g.bpm ?? null,
+              takeFile: take?.file ?? "", measuredAt: Date.now(),
+            },
+          },
+        }));
+      }
+      const data = res.data;
       if (!res.ok || !data.ok) {
-        setError(data.reason ?? data.error ?? "The alignment could not be computed");
+        const gridReason = gridRes.ok && gridRes.data.ok ? null : (gridRes.data.reason ?? gridRes.data.error);
+        // Only an error when NEITHER produced a number; one failing alone is
+        // normal (no pulse, too few attacks, a soft DTW refusal).
+        if (!(gridRes.ok && gridRes.data.ok)) {
+          setError(`${data.reason ?? data.error ?? "The alignment could not be computed"}`
+            + (gridReason ? ` · Pulse grid: ${gridReason}` : ""));
+        }
         return;
       }
-      const take = serverSession.participants[takeKey];
       setServerSession((prev) => ({
         ...prev,
         alignments: {
@@ -3489,10 +3754,23 @@ export default function Play2GetherHostPanel({
               {canMix && !isMixing && (
                 <div ref={mixerWidthRef} className="flex flex-col gap-2">
                   <ZoomBar view={view} totalSec={totalSec} widthPx={mixerWidth} onView={setView} />
+                  {pulseState.status !== "none" && (
+                    <p className="text-[10px] text-zinc-500 -mt-1 inline-flex items-center gap-1.5"
+                       title="The reference's beats, found by a small neural beat tracker (Beat This!). Yellow lines on every strip; a take is in time when its attacks sit on them, whatever the instrument.">
+                      {pulseState.status === "computing" && (<><Loader2 className="w-3 h-3 animate-spin" /> Finding the reference&apos;s pulse… (once per reference, about half a minute)</>)}
+                      {pulseState.status === "ready" && (
+                        <><Music2 className="w-3 h-3 text-yellow-300/70" />
+                          Pulse grid · {pulseState.bpm ?? "?"} BPM
+                          {pulseState.regularPct < 60 && <span className="text-amber-200/70"> · irregular tempo, trust it less</span>}</>
+                      )}
+                      {pulseState.status === "failed" && (<><AlertTriangle className="w-3 h-3 text-amber-300" /> No pulse grid: {pulseState.reason}</>)}
+                    </p>
+                  )}
                   {p2g.referenceUrl && (
                     <GainSlider
                       name="Reference"
                       isReference
+                      pulse={pulse}
                       value={refGain}
                       onChange={debouncedRefGain}
                       audioUrl={p2g.referenceUrl}
@@ -3534,6 +3812,7 @@ export default function Play2GetherHostPanel({
                         key={id}
                         name={baseName}
                         takeNum={participant?.takeNum}
+                        simulatedLatencyMs={participant?.simulatedLatencyMs}
                         value={participantGains[id] ?? 1.0}
                         onChange={(v) => setParticipantGains((prev) => ({ ...prev, [id]: v }))}
                         audioUrl={audioUrl}
@@ -3576,6 +3855,8 @@ export default function Play2GetherHostPanel({
                         // describes a performance, so re-recording invalidates
                         // it and the row says so.
                         alignment={serverSession.alignments?.[id]}
+                        beatGrid={serverSession.beatGrids?.[id]}
+                        pulse={pulse}
                         takeFile={file}
                         takeUploadedAt={participant?.uploadedAt}
                         levelDb={participant?.levelDb}
