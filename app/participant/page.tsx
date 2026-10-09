@@ -130,7 +130,12 @@ export default function ParticipantPage() {
     };
     const onDisconnected = (reason?: DisconnectReason) => {
       logConn("disconnected", { reason: reason !== undefined ? DisconnectReason[reason] ?? String(reason) : null });
-      if (reason !== DisconnectReason.CLIENT_INITIATED) {
+      // PARTICIPANT_REMOVED = the host kicked us: useKicked shows that, and a
+      // "Connection lost · Rejoin" over it would offer a rejoin the deleted
+      // role refuses.
+      if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
+        setReconnecting(false);
+      } else if (reason !== DisconnectReason.CLIENT_INITIATED) {
         setReconnecting(false);
         setDisconnected(true);
       }
