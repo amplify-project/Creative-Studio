@@ -11,6 +11,7 @@ import {
   CAPTURE_DONE_TIMEOUT_MS, captureGapFields, readTrackAudioStats, trackDropFields,
   type CaptureStats, type TrackAudioStatsSnapshot,
 } from "../lib/p2gCaptureStats";
+import { buildTestTake, type P2GTestTrack } from "../lib/p2gTestTrack";
 // The acoustic measurement itself. Imported from the component module because
 // that is where it has always lived and where the self-serve button still calls
 // it — one definition of the measurement, two ways to start it. The dependency
@@ -184,6 +185,13 @@ export type UsePlay2GetherReturn = {
    */
   calibratedLatencyMs: number | null;
   setCalibratedLatency: (ms: number | null) => void;
+  /**
+   * A file to send as this participant's take instead of the microphone,
+   * delayed by a simulated output latency (see `app/lib/p2gTestTrack.ts`).
+   * Only the capture instance acts on it. Ignored in sync rounds.
+   */
+  testTrack: P2GTestTrack | null;
+  setTestTrack: (t: P2GTestTrack | null) => void;
   /**
    * Store a calibration on the SERVER, where the mixer can seed from it.
    *
@@ -1233,6 +1241,15 @@ export function usePlay2GetherSession(
    * of every take.
    */
   const captureDoneRef = useRef<Promise<void> | null>(null);
+  /** The test track, if one is loaded, and the one used for the current round
+   *  (snapshotted at prewarm so swapping files mid-round changes nothing). */
+  const [testTrack, setTestTrackState] = useState<P2GTestTrack | null>(null);
+  const testTrackRef = useRef<P2GTestTrack | null>(null);
+  const testTakeRef = useRef<{ clapAt: number; track: P2GTestTrack } | null>(null);
+  const setTestTrack = useCallback((t: P2GTestTrack | null) => {
+    testTrackRef.current = t;
+    setTestTrackState(t);
+  }, []);
   const captureDoneResolveRef = useRef<(() => void) | null>(null);
   /** The worklet's gap counters for the take, from its `done` message. */
   const captureStatsRef = useRef<CaptureStats | null>(null);
@@ -1331,6 +1348,20 @@ export function usePlay2GetherSession(
     trackStatsStartRef.current = null;
     trackStatsEndRef.current = null;
     captureDoneRef.current = null;
+    testTakeRef.current = null;
+
+    // Test track: the take is the file, built now — no mic, no recorder graph.
+    // The armed lock stays held (keyed by this clapAt), which is what keeps
+    // this effect and the other hook instances from arming the mic anyway.
+    const test = testTrackRef.current;
+    if (test && p2g.roundKind !== "sync") {
+      chunksRef.current = [buildTestTake(test.samples, test.sampleRate, test.latencyMs, roundDurationSec(p2g) * 1000)];
+      chunksClapAtRef.current = clapAt;
+      captureSampleRateRef.current = test.sampleRate;
+      testTakeRef.current = { clapAt, track: test };
+      console.log(`[play2gether/test] round ${clapAt}: sending "${test.name}" +${test.latencyMs} ms instead of the mic`);
+      return;
+    }
 
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1724,10 +1755,14 @@ export function usePlay2GetherSession(
     }
     const sampleRate = captureSampleRateRef.current;
     const blob       = encodeWAV(chunks, sampleRate);
-    const clapOffset = calibratedLatencyMs ?? playbackLatencyMsRef.current;
+    const test = testTakeRef.current?.clapAt === p2g.clapAt ? testTakeRef.current.track : null;
+    // A test take reports either a perfect calibration or none, as chosen.
+    const clapOffset = test
+      ? (test.reportAsCalibration ? test.latencyMs : 0)
+      : calibratedLatencyMs ?? playbackLatencyMsRef.current;
     // Distinguish a trusted acoustic-calibration value from the flaky browser
     // auto-detection, so the mixer can surface it and let the host decide.
-    const calibrated = calibratedLatencyMs != null;
+    const calibrated = test ? test.reportAsCalibration : calibratedLatencyMs != null;
     // Residual capture-start delay after prewarm+gate. Deterministic (unlike
     // clapOffset) — the mixer compensates it automatically so takes stop
     // running ahead of the reference. Should now be ~a few ms, not tens.
@@ -1780,6 +1815,7 @@ export function usePlay2GetherSession(
       wallElapsedMs,
       ctxLagMs: ctxElapsedMs != null && wallElapsedMs != null ? wallElapsedMs - ctxElapsedMs : null,
       ...captureGapFields(captureStatsRef.current),
+      ...(test ? { testTrack: true, simulatedLatencyMs: test.latencyMs } : {}),
       ...trackDropFields(trackStatsStartRef.current, trackStatsEndRef.current),
       capturedMs,
       expectedMs,
@@ -1854,7 +1890,8 @@ export function usePlay2GetherSession(
       return uploadRecording(p2g.sessionId!, identity, displayName, blob, clapOffset, calibrated,
                              captureDelayMs, isSyncRound,
                              isSyncRound ? (p2g.syncSeed ?? 0) : 0,
-                             isSyncRound ? (p2g.syncJitterMs ?? 0) : 0)
+                             isSyncRound ? (p2g.syncJitterMs ?? 0) : 0,
+                             test?.latencyMs)
         .then(
           (timings) => {
             finish(true, timings);
@@ -2531,6 +2568,7 @@ export function usePlay2GetherSession(
     isLocalTarget, targetName,
     calibratedLatencyMs, setCalibratedLatency, publishCalibration,
     clearPublishedCalibration,
+    testTrack, setTestTrack,
     calibRound,
     syncResult, syncRefused,
     lyricsText,
@@ -2630,6 +2668,7 @@ async function uploadRecording(
   isSyncRound = false,
   syncSeed = 0,
   syncJitterMs = 0,
+  simulatedLatencyMs?: number,
 ): Promise<ServerUploadTimings> {
   // Send the WAV as raw body (not multipart). The server now streams the
   // body directly to disk instead of buffering with req.formData(), so
@@ -2647,6 +2686,7 @@ async function uploadRecording(
     syncSeed: String(Math.round(syncSeed)),
     syncJitterMs: String(Math.max(0, Math.round(syncJitterMs))),
     ...(isSyncRound ? { kind: "sync" } : {}),
+    ...(simulatedLatencyMs != null ? { simulatedLatencyMs: String(Math.round(simulatedLatencyMs)) } : {}),
   });
 
   const controller = new AbortController();

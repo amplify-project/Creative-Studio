@@ -16,6 +16,7 @@ import {
   SYNC_BARS, SYNC_SPREAD_GOOD_MS, SYNC_SPREAD_FAIR_MS,
   SYNC_FIRST_PLAYED_BEAT, syncCountInSec,
 } from "../app/lib/p2gSync";
+import { decodeTestTrack, type P2GTestTrack } from "../app/lib/p2gTestTrack";
 
 function fmtTime(sec: number) {
   const s = Math.floor(sec);
@@ -231,6 +232,78 @@ function WhatIsThis() {
  * resized around the column rather than covered (field report 2026-09-28: the
  * old centred card sat on the videos and could not be moved).
  */
+/**
+ * Test mode only (`?p2gtest` in the URL): send a file as this participant's
+ * take instead of the microphone, `latencyMs` late — a player with that output
+ * latency, minus the human. See app/lib/p2gTestTrack.ts.
+ */
+function TestTrackPicker({ track, onChange }: {
+  track: P2GTestTrack | null;
+  onChange: (t: P2GTestTrack | null) => void;
+}) {
+  const [latencyMs, setLatencyMs] = useState(track?.latencyMs ?? 120);
+  const [asCalibration, setAsCalibration] = useState(track?.reportAsCalibration ?? false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Latency and the calibration flag apply to the loaded track as they change.
+  useEffect(() => {
+    if (track && (track.latencyMs !== latencyMs || track.reportAsCalibration !== asCalibration)) {
+      onChange({ ...track, latencyMs, reportAsCalibration: asCalibration });
+    }
+  }, [latencyMs, asCalibration]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const load = async (file: File) => {
+    setLoading(true); setError(null);
+    try {
+      const { samples, sampleRate } = await decodeTestTrack(file);
+      onChange({ name: file.name, samples, sampleRate, latencyMs, reportAsCalibration: asCalibration });
+    } catch (e) {
+      setError(`Could not decode ${file.name}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="w-full rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-left space-y-2">
+      <p className="text-xs font-semibold text-amber-300">Test mode — send a track instead of your mic</p>
+      {track ? (
+        <div className="flex items-center gap-2 text-xs text-zinc-200">
+          <Music2 className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+          <span className="truncate flex-1" title={track.name}>{track.name}</span>
+          <span className="text-zinc-400 tabular-nums">{Math.round(track.samples.length / track.sampleRate)}s</span>
+          <button onClick={() => onChange(null)} title="Use the microphone again"
+                  className="text-zinc-400 hover:text-rose-400"><X className="w-3.5 h-3.5" /></button>
+        </div>
+      ) : (
+        <label className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 cursor-pointer text-xs text-zinc-200">
+          {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Music2 className="w-3.5 h-3.5" />}
+          {loading ? "Decoding…" : "Choose audio file"}
+          <input type="file" accept="audio/*" className="hidden" disabled={loading}
+                 onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) load(f); }} />
+        </label>
+      )}
+      <label className="flex items-center gap-2 text-xs text-zinc-300">
+        Simulated output latency
+        <input type="number" min={0} max={2000} step={1} value={latencyMs}
+               onChange={(e) => setLatencyMs(Math.min(2000, Math.max(0, Number(e.target.value) || 0)))}
+               className="w-20 rounded bg-zinc-900 border border-zinc-700 px-1.5 py-0.5 text-right tabular-nums" />
+        ms
+      </label>
+      <label className="flex items-center gap-2 text-xs text-zinc-300">
+        <input type="checkbox" checked={asCalibration} onChange={(e) => setAsCalibration(e.target.checked)} />
+        Report it as my calibration (a perfectly calibrated player)
+      </label>
+      {error && <p className="text-xs text-rose-400">{error}</p>}
+      <p className="text-[11px] text-zinc-400 leading-relaxed">
+        Your take will be this file, {latencyMs} ms late. The host&apos;s mixer marks it, and its
+        correct Sync value is {latencyMs} ms. Sync rounds still use the microphone.
+      </p>
+    </div>
+  );
+}
+
 function Body({ children }: { children: React.ReactNode }) {
   return <div className="flex flex-col items-center gap-5 px-5 py-6">{children}</div>;
 }
@@ -262,7 +335,12 @@ export default function Play2GetherClientPanel({
     micAnalyser, refAnalyser, getReferenceTime,
     isLocalTarget, targetName,
     calibratedLatencyMs, setCalibratedLatency, publishCalibration, clearPublishedCalibration, calibRound,
+    testTrack, setTestTrack,
   } = usePlay2GetherSession();
+  // Opt-in, per tab: the test picker exists only with `?p2gtest` in the URL.
+  const [testMode] = useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("p2gtest"),
+  );
 
   const [isReady, setIsReady] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
@@ -450,6 +528,7 @@ export default function Play2GetherClientPanel({
               onOpen={() => setCalibrating(true)}
               onClear={() => { setCalibratedLatency(null); clearPublishedCalibration(); }}
             />
+            {(testMode || testTrack) && <TestTrackPicker track={testTrack} onChange={setTestTrack} />}
             <WhatIsThis />
           </>
         )}
@@ -478,6 +557,8 @@ export default function Play2GetherClientPanel({
                   mic unavailable
                 </div>
             }
+
+            {(testMode || testTrack) && <TestTrackPicker track={testTrack} onChange={setTestTrack} />}
 
             {isReady ? (
               <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-800/50 border border-emerald-600">
@@ -566,6 +647,11 @@ export default function Play2GetherClientPanel({
               <p className="text-sm font-semibold text-rose-400">
                 {isSyncRound ? (inCountIn ? "Listen — count 4 in" : "Play on every click") : "Play now"}
               </p>
+              {testTrack && !isSyncRound && (
+                <p className="text-xs text-amber-300">
+                  Test: sending &ldquo;{testTrack.name}&rdquo; +{testTrack.latencyMs} ms instead of your mic
+                </p>
+              )}
               {/* Progress bar */}
               <div className="w-full bg-zinc-700 rounded-full h-2">
                 <div
