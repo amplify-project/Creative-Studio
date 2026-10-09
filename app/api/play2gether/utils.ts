@@ -200,6 +200,23 @@ export interface Play2GetherAlignment {
   measuredAt: number;
 }
 
+/** Where a take's attacks land on the reference's pulse. See docs/llm/15-beat-grid.md. */
+export interface Play2GetherBeatGrid {
+  name: string;
+  /** Slider value that places the take: lagMs + captureDelayMs, as for the DTW. */
+  offsetMs: number;
+  lagMs: number;
+  /** Runner-up score / best score. Near 1 = pulse and off-beat fit equally. */
+  aliasRatio: number;
+  clear: boolean;
+  candidates: { offsetMs: number; score: number }[];
+  centred: boolean;
+  atWindowEdge: boolean;
+  bpm: number | null;
+  takeFile: string;
+  measuredAt: number;
+}
+
 export interface Play2GetherSession {
   sessionId: string;
   roomName: string;
@@ -236,6 +253,9 @@ export interface Play2GetherSession {
    *  `takeFile`, which says which one it describes. Host-triggered, never
    *  automatic, and it never seeds the mixer on its own. */
   alignments?: Record<string, Play2GetherAlignment>;
+  /** Pulse-grid placement of a TAKE (scripts/p2g_beat_grid.py), keyed like
+   *  `alignments` and dropped with them when the take changes. */
+  beatGrids?: Record<string, Play2GetherBeatGrid>;
   resultFile: string | null;
   /** Master gain in dB applied to the last render, so the host can see what was
    *  done to the output level rather than wondering why a mix came back louder

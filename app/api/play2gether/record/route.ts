@@ -424,6 +424,7 @@ export async function POST(req: NextRequest) {
       // changed. It then showed a number measured from a take that no longer
       // exists, and — because the row only offers the Align button when there
       // is nothing to show — no way to measure the new one.
+      if (meta.beatGrids?.[takeKey]) delete meta.beatGrids[takeKey];
       if (meta.alignments && meta.alignments[takeKey]) {
         delete meta.alignments[takeKey];
       }
@@ -492,6 +493,7 @@ export async function DELETE(req: NextRequest) {
     // behind is how a re-recorded take inherits the previous one's number (see
     // the note in POST).
     if (meta.alignments?.[participantId]) delete meta.alignments[participantId];
+    if (meta.beatGrids?.[participantId]) delete meta.beatGrids[participantId];
     await writeSession(meta);
   }
 
