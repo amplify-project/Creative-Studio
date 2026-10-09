@@ -57,7 +57,7 @@ makes ffmpeg skip the track entirely.
 | [components/Play2GetherClientPanel.tsx](../../components/Play2GetherClientPanel.tsx) | Participant panel: countdown / recording / uploading / mixing / done + passive observer view. Lives as the **Play** tab of the participant's docked side panel (`ParticipantControlPanel docked`), next to the chat: a column right of the stage (a band below it on phones), the stage resized rather than covered. Reports `{active, urgent, attention}` up via `onStatus`; the column opens on this tab when a session starts and jumps to it for countdown/take/calibration round. It owns the `capture` hook instance — never unmount it mid-session, hide it. The lyrics banner is mounted by `MainStageParticipant` inside the stage, not by this panel. |
 | [components/Play2GetherCalibration.tsx](../../components/Play2GetherCalibration.tsx) | Shared `CalibrationFlow` + `CalibrationButton` + `runAcousticTrial` (acoustic-loopback latency measurement). Used by both host and client panels. |
 | [components/LyricsOverlay.tsx](../../components/LyricsOverlay.tsx) | LRC parser + bottom-banner UI (`Play2GetherLyricsBanner` is the entry component that calls the hook). |
-| [public/play2gether-capture-worklet.js](../../public/play2gether-capture-worklet.js) | AudioWorkletProcessor: accumulates 4800-sample batches, writes exactly 128 samples per `process()` (zero-pad on empty input). |
+| [public/play2gether-capture-worklet.js](../../public/play2gether-capture-worklet.js) | AudioWorkletProcessor: accumulates 4800-sample batches, writes exactly 128 samples per `process()` (zero-pad on empty input). On `stop` ships the partial batch, then a `done` message with gap counters (see *The end of a take*). |
 | [app/api/play2gether/session/route.ts](../../app/api/play2gether/session/route.ts) | POST create session, GET fetch metadata. |
 | [app/api/play2gether/reference/route.ts](../../app/api/play2gether/reference/route.ts) | POST audio upload. Runs `probeDuration` and stores `referenceDuration`. Accepts optional `durationSec` form field as fallback for WebM. |
 | [app/api/play2gether/lyrics/route.ts](../../app/api/play2gether/lyrics/route.ts) | POST .lrc upload (max 200 KB), DELETE. |
@@ -281,6 +281,33 @@ mic MediaStreamTrack
   → POST /api/play2gether/record with WAV blob
   → server transcodes to Opus + precomputes peaks (see below)
 ```
+
+### The end of a take: flush, then `done` (2026-10-08, PR #8)
+
+The worklet only posts full 4800-sample batches (100 ms at 48 kHz). `stop` used
+to close the gate and nothing more, and the teardown nulled `port.onmessage`
+in the same tick — so the partial batch, 0–100 ms, never left the worklet, and
+a batch already in flight was dropped too. That was the "takes lose ~109 ms of
+tail" item from the August calibration round.
+
+Now `stop` posts the partial batch and then `{type:"done", …counters}`. Port
+messages are ordered, so once `done` arrives every sample is in `chunksRef`.
+The teardown builds `captureDoneRef` (a promise resolved by `done`, or by a
+500 ms timeout) and closes the context only after it; `doUpload` awaits the
+same promise before reading the chunks — the two run on the same phase change,
+and reading first is exactly the old bug. A worklet that never started still
+answers (`{type:"done", started:false}`) so nothing waits out the timeout.
+
+> **Rule — never null `onmessage` or close the recorder context before
+> `done`.** Field check after the fix: `capturedMs` equals `ctxElapsedMs`
+> (6267 = 6267); before it the same host lost 11 and 53 ms.
+
+The `done` message also carries what the worklet saw — see `p2g_take` below.
+Counted there rather than on the empty-input branch on purpose: with a
+`MediaStreamSource` connected, `inputs[0]` is almost never empty. When the mic
+or the track's FIFO runs dry the browser feeds the graph *zeros*, so a gap is a
+run of exact-zero samples (≥ 64, ~1.3 ms — a live mic in music mode never sits
+at exact 0.0 that long). Pure telemetry: the take itself is not altered.
 
 ### The mixer's two envelopes, and why zooming needed a second one
 
@@ -1058,7 +1085,7 @@ a reconnect thirty seconds earlier are one story, not two.
 |---|---|---|
 | `p2g_clock` | once per hook mount, when an identity exists | `offsetMs`, `offsetSpreadMs`, `rttMin/Med/Max`, `validSamples` |
 | `p2g_reference` | reference fetch+decode settles | `bytes`, `fetchMs`, `decodeMs`, `fallback`, `ok` |
-| `p2g_take` | capture ended, BEFORE the bytes leave | `bytes`, `sampleRate` (recorder context), `trackSampleRate` (mic), `capturedMs`, `expectedMs`, `shortfallMs`, `ctxElapsedMs`/`wallElapsedMs`/`ctxLagMs`, `captureDelayMs`, `clapOffsetMs`, `calibrated`, `slot`/`total`, `staggerDelayMs` |
+| `p2g_take` | capture ended, BEFORE the bytes leave | `bytes`, `sampleRate` (recorder context), `trackSampleRate` (mic), `capturedMs`, `expectedMs`, `shortfallMs`, `ctxElapsedMs`/`wallElapsedMs`/`ctxLagMs`, `captureDelayMs`, `clapOffsetMs`, `calibrated`, `slot`/`total`, `staggerDelayMs`; gaps from the worklet: `gapStats` (false = the worklet never reported), `gapCount`, `gapMs`, `gapLongestMs`, `gaps` (`"12.34s+45ms …"`, first 12), `emptyQuanta`, `shortQuanta`, `writtenMs`; Chrome only: `trackDroppedFrames`, `trackDroppedMs`, `trackTotalFrames` (`MediaStreamTrack.stats` between clap and stop); test takes: `testTrack`, `simulatedLatencyMs` |
 | `p2g_upload` | transfer settled (either way) | `ok`, `bytes`, `waitMs`, `uploadMs`, `recvMs`, `serverMs`, `kbps`, `kbpsSource`, `error` |
 
 All carry `netInfo()` (`netType`, `downlinkMbps`, `netRttMs`) and the round's
@@ -1096,6 +1123,18 @@ All carry `netInfo()` (`netType`, `downlinkMbps`, `netRttMs`) and the round's
   round whose recorder never armed (no mic published) uploaded the previous
   round's samples. `capturedMs` then matches the previous round's length, not
   this one's.
+- **`ctxElapsedMs − capturedMs`** is the tail check, and it should be 0. Do
+  not use `shortfallMs` for it: the stop fires on the phase change, a little
+  AFTER `expectedMs`, so shortfall is negative by a varying couple of hundred
+  ms and hides a 50 ms loss.
+- **`gapCount > 0`**: many long runs that line up with rests = a device with a
+  hard noise gate, not dropouts; a few runs in the middle of playing = real
+  gaps (open the take in the mixer at the second `gaps` names). Lost render
+  callbacks leave no zeros — the take just comes out short — which is
+  `ctxLagMs`'s job, not this.
+- **`trackSampleRate` 44100 with `sampleRate` 48000** is normal: the mic runs at
+  the OS rate and the browser resamples into the 48 kHz recorder.
+  `trackTotalFrames` counts at the mic's rate.
 - **A `p2g_take` with no matching `p2g_upload`** is a take that died in memory.
   The stagger wait is the one window where a take exists nowhere else and has
   no retry, so its absence had to be made visible. `retryUpload()` re-enters
@@ -1124,6 +1163,39 @@ The server side needs nothing added: `[p2g/record <reqId>]` already logs START,
 streamed MB, transcode ratio, peaks, lock and DONE with cumulative ms. The
 client half is what was missing — everything that happened before the bytes
 arrived.
+
+## Test track mode (`?p2gtest`, PR #9)
+
+Testing the mixer, the DTW or the pulse grid used to need musicians and never
+had a known answer. With `?p2gtest` added to a **participant's** URL (it
+already has `?sessionId=…`, so `&p2gtest`), the client panel shows an amber
+"Test mode — send a track instead of your mic" box in the preparing and
+rehearsal phases: an audio file, a simulated output latency (ms, default 120),
+and whether to report that latency as the player's calibration.
+
+During a take round the capture instance does not arm the mic at all. The
+prewarm effect builds the take on the spot — the file, decoded to mono 48 kHz,
+preceded by `latency` ms of silence and cut or padded to the round's length
+(`buildTestTake`, `app/lib/p2gTestTrack.ts`) — and the rest of the round is the
+normal path: staggered upload, record route, Opus, peaks. Sync rounds still use
+the mic.
+
+**Why a delay is the whole simulation:** a real player hears the reference
+`L` ms late and plays in time with what they hear, so everything lands `L` ms
+late in their take. The file shifted by `L` is that player minus the human, so
+**the correct Sync value is exactly `L`**. The record route stores it as
+`simulatedLatencyMs` and the mixer shows "test · sync L ms" on the take.
+
+> **Only true when the file is aligned with the reference at source** — stems
+> of one session (e.g. `DrStem` as reference, `KeyStem` as the test track). A
+> real take from an earlier session already carries its own unknown delay, so
+> the answer becomes "that delay + L" and nothing can be checked against it.
+> First real use (2026-10-08): KeyStem +120 over DrStem — the server's Opus
+> take matched the original +120.00 ms; pulse grid +117, DTW −75 ±168.
+
+Caveats: a participant with a stored server-side calibration may still seed
+the mixer from it — test with uncalibrated participants. Several "players" =
+several tabs, each with its own file and latency.
 
 ## Browser caching gotcha
 

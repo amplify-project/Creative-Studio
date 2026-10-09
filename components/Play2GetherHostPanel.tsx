@@ -1512,7 +1512,7 @@ function useMixPreview({ sources, onPlayhead }: {
  * readout, a gain fader with mute, an overflow menu (delete / use-as-layer), and
  * the take waveform with the reference silhouette overlaid as a visual sync aid.
  */
-function GainSlider({ name, takeNum, isReference, value, onChange, audioUrl, peaksUrl, peaksBinUrl, referenceUrl, referencePeaksUrl, captureDelayMs, onDelete, onUseAsRef, offsetMs, onOffsetChange, onOffsetNudge, syncOffset, calibOffset,
+function GainSlider({ name, takeNum, simulatedLatencyMs, isReference, value, onChange, audioUrl, peaksUrl, peaksBinUrl, referenceUrl, referencePeaksUrl, captureDelayMs, onDelete, onUseAsRef, offsetMs, onOffsetChange, onOffsetNudge, syncOffset, calibOffset,
   alignment, beatGrid, pulse, onAnalyse, analysing = false, takeFile, takeUploadedAt, levelDb, peakDb, compact = false, expanded = false, onToggleExpanded, view, totalSec, onView, playheadSec, onPlayhead }: {
   /** Where this take's attacks land on the reference's pulse (server). */
   beatGrid?: ServerBeatGrid;
@@ -1523,6 +1523,8 @@ function GainSlider({ name, takeNum, isReference, value, onChange, audioUrl, pea
   isReference?: boolean;
   /** 2+ when the same singer has multiple takes; shown as a "take N" badge. */
   takeNum?: number;
+  /** Test take: the simulated latency it was sent with, i.e. the right answer. */
+  simulatedLatencyMs?: number;
   audioUrl?: string; onDelete?: () => void; onUseAsRef?: () => void;
   /** Server-precomputed envelope for this take, when it has one. */
   peaksUrl?: string;
@@ -1653,6 +1655,15 @@ function GainSlider({ name, takeNum, isReference, value, onChange, audioUrl, pea
             take {takeNum}
           </span>
         ) : null}
+        {!isReference && simulatedLatencyMs != null && (
+          <span
+            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0"
+            title={`Test take: a file sent instead of a microphone, ${simulatedLatencyMs} ms late to simulate output latency. `
+              + `The correct Sync value is ${simulatedLatencyMs} ms — compare the calibration, DTW and your own ear against it.`}
+          >
+            test · sync {simulatedLatencyMs} ms
+          </span>
+        )}
 
         <span className="flex-1" />
 
@@ -2184,6 +2195,8 @@ type ServerParticipant = {
   /** Measured capture-start delay (ms) the mixer pads the take by — used to
    *  shift this take's waveform so the overlay matches the mixed alignment. */
   captureDelayMs?: number;
+  /** Test takes only — see app/lib/p2gTestTrack.ts. */
+  simulatedLatencyMs?: number;
   uploadedAt: number;
   takeNum?: number;
   participantId?: string;
@@ -3790,6 +3803,7 @@ export default function Play2GetherHostPanel({
                         key={id}
                         name={baseName}
                         takeNum={participant?.takeNum}
+                        simulatedLatencyMs={participant?.simulatedLatencyMs}
                         value={participantGains[id] ?? 1.0}
                         onChange={(v) => setParticipantGains((prev) => ({ ...prev, [id]: v }))}
                         audioUrl={audioUrl}
