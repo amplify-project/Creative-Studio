@@ -96,3 +96,45 @@ Use the test track mode (`?p2gtest`, PR #9): send a stem as a take with a known
 latency over a reference cut from the same session, and the mixer badge shows
 the right answer next to this one. Keep the jazz leave-one-out numbers above as
 the regression: 9/9, constant per-instrument error.
+
+## Real takes, 2026-10-13 (see doc 12, "Real takes, and the echo test")
+
+**Choir is its worst material.** On the Dagstuhl ChoirSet benchmark (296
+leave-one-out cases, `scripts/p2g_real_bench.py`) it is the weakest method:
+centred, 24 of 148 clean answers are off by more than 60 ms, and several are
+flagged `clear` while 283–456 ms out. Locus Iste is slow and rubato; a sung part
+has soft attacks. `aliasRatio` does not separate right from wrong there (wrong
+answers as low as 0.46). On voices, prefer the DTW.
+
+**"Agrees with DTW" now needs a DTW that measured.** A DTW that returned the
+calibration figure (`verdict: follows-centre`), next to a grid centred on the
+same figure, agreed by construction.
+
+## Downbeats on the take (experiment, 2026-10-13 — not in the product)
+
+Beat aliasing is a property of the cycle, not of the detector: a shift by one
+period fits as well as the right one. At 183 BPM a beat is 328 ms and fits in
+the ±400 ms search; a bar is >1.3 s and does not. So: run Beat This! on the
+TAKE too, match take downbeats to reference downbeats over ±1.2 s, then refine
+on attacks within ±0.15 s of that. `scripts/p2g_downbeat_exp.py <workdir>`
+(jazz keys/guitar stems from `testAudio`, both directions, lags 0/130/287,
+tempo ×1 and ×1.5 via ffmpeg `atempo`; ~3 min).
+
+```
+                           pulse grid, blind      downbeats + refine
+jazz, tempo ×1  (6)        4 right, 2 at −505      6/6 (constant +25 guitar / −23 keys: the feel)
+jazz, tempo ×1.5 (6)       5 within 15 ms, 1 out   fails — 3 downbeats found in 60 s
+```
+
+- **It fixes the alias where the model finds bars.** Both −505 ms failures of
+  today's grid (a beat out at 57 BPM-ish) land right.
+- **On a single instrument the model often does not find bars.** Same music,
+  same 60 s: piano alone tracked at 57 BPM, guitar alone at 109 — a metrical
+  level apart — though their downbeat COUNTS agreed (17–19). Sped up ×1.5 (with
+  `atempo` artefacts, to be fair to the model) it found 3 downbeats in a minute.
+- If it ships, it needs a gate: enough downbeats on both sides and the same bar
+  length on both, else fall back to today's grid. With that gate the ×1.5 cases
+  would refuse rather than answer wrong.
+- The natural next step is a fine-tune of Beat This! on single-instrument stems
+  (its training code is public): days on the HPC, and the benchmark already
+  measures whether it helped.

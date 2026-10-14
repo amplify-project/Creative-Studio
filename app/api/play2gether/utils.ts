@@ -194,6 +194,20 @@ export interface Play2GetherAlignment {
    *  measurably score worse (fixtures: 4 good / 5 fair / 3 bad, against
    *  7 / 3 / 2 centred), so the UI says which one this was. */
   centred: boolean;
+  /** Whether this number is a measurement, and if not why — see
+   *  docs/llm/12-dtw-alignment.md, "The echo test". Absent on alignments stored
+   *  before 2026-10-13; the UI then falls back to the old MAD rule.
+   *   - measured        the only one the UI presents as a number to trust
+   *   - follows-centre  moving the search centre moved the answer (echo > 0.5):
+   *                     it returned the calibration figure, it did not measure
+   *   - band-edge       the answer is pinned against the search range */
+  verdict?: "measured" | "follows-centre" | "band-edge";
+  /** (lag₊ − lag₋) / 100 for runs centred 50 ms either side. 0 = measures. */
+  echo?: number;
+  /** The reference found in the take (headphone leak, speakers) and removed
+   *  before aligning. Its delay is the device round trip measured on this take,
+   *  and it centred the search. Null = none found. */
+  bleed?: { lagMs: number; psr: number; levelDb: number } | null;
   /** The take this describes. A re-recorded take makes it stale, and the UI
    *  says so rather than showing a number for a performance that is gone. */
   takeFile: string;

@@ -27,6 +27,13 @@ Its output is two numbers and a curve:
 USAGE
     p2g_dtw_align.py REFERENCE TAKE [--expect MS] [--feature melflux|chroma]
                      [--band SEC] [--window SEC] [--capture-delay MS]
+                     [--no-echo] [--no-debleed]
+
+By default it removes reference bleed first (p2g_bleed.py), runs the DTW twice
+with the band centred ±50 ms around --expect, reports the midpoint, and returns
+a `verdict`: measured | follows-centre | band-edge. See ECHO_SHIFT_MS. When it
+finds bleed, the bleed's lag (the round trip, measured on this take) becomes the
+centre instead of --expect; `centreFrom` says which was used.
 
 Writes one JSON object to stdout. numpy and ffmpeg only — deliberately no
 librosa: its `onset_strength` is reproduced here to the millisecond by
@@ -36,6 +43,7 @@ that material.
 """
 
 import argparse, json, subprocess, sys
+from pathlib import Path
 import numpy as np
 
 SR = 22050          # plenty for onsets and chroma; a quarter of the samples of 48k
@@ -102,42 +110,82 @@ def _mel_filterbank(n_mels: int = 128) -> np.ndarray:
     return fb
 
 
-def mel_flux(y: np.ndarray) -> np.ndarray:
+# Where bleed was removed, what is left of it sits ~15–20 dB under what was
+# removed. Both features are scale-free — melflux works on a log spectrum and
+# chroma normalises every frame — so in the player's rests that residue reads
+# as music exactly as loud as the player's own: on a synthetic take whose
+# cleaned audio matched the player to 37 dB, melflux still answered 17 ms for a
+# player at 130 (2026-10-13). So the removed bleed is used as a MASK: anything
+# in the cleaned take below (removed bleed − BLEED_MASK_DB), bin by bin and
+# frame by frame, is treated as residue — floored for melflux, zeroed for
+# chroma. Where the player is louder than that, nothing changes.
+BLEED_MASK_DB = 15.0
+# A floor relative to the file's maximum (librosa's top_db) — ONLY once bleed
+# has been removed. Everywhere it cost the synthetic fixtures 7/3/2 → 5/6/1
+# centred and 4/4/4 → 0/1/11 blind (the jump out of true silence is part of what
+# the onset feature measures); after debleeding it is what keeps the residue
+# down: choir with bleed, 104 → 127 of 148 within 25 ms (2026-10-13).
+TOP_DB_AFTER_BLEED = 80.0
+
+
+def mel_flux(y: np.ndarray, mask: np.ndarray | None = None, top_db: float | None = None) -> np.ndarray:
     """Half-wave-rectified spectral flux over a mel filterbank — onsets.
 
     Reproduces `librosa.onset.onset_strength` on the material tested. Best when
     the take and the reference share RHYTHM: percussion, plucked strings,
-    anything with an attack.
+    anything with an attack. `mask`: the bleed that was removed from `y`, if any
+    (see BLEED_MASK_DB).
     """
     fb = _mel_filterbank().T
-    out, tail = [], None
+    chunks, keeps = [], []
+    masks = _stft_mag(mask) if mask is not None else None
     for mag in _stft_mag(y):
         S = 10.0 * np.log10(np.maximum((mag ** 2) @ fb, 1e-10))
+        K = np.ones_like(S, dtype=bool)
+        if masks is not None:
+            M = next(masks, None)
+            if M is not None and len(M) == len(S):
+                # NOT a floor shaped like the bleed: that floor has the bleed's
+                # onsets in it, and the first version of this put them straight
+                # back into the feature (5 dB mask: 49 ms for a player at 130).
+                # Masked bins simply contribute no flux.
+                K = S >= 10.0 * np.log10(np.maximum((M ** 2) @ fb, 1e-10)) - BLEED_MASK_DB
+        chunks.append(S)
+        keeps.append(K)
+    if not chunks:
+        return np.zeros(1, np.float32)
+    top = max(float(c.max()) for c in chunks) if top_db is not None else None
+    out, tail = [], None
+    for S, K in zip(chunks, keeps):
+        if top is not None:
+            S = np.maximum(S, top - top_db)
         if tail is not None:
             S = np.vstack([tail, S])
-        d = np.maximum(np.diff(S, axis=0), 0).mean(axis=1)
+        d = np.maximum(np.diff(S, axis=0), 0)
+        d = np.where(K[-len(d):], d, 0.0).mean(axis=1)
         out.append(d.astype(np.float32))
         tail = S[-1:]
-    if not out:
-        return np.zeros(1, np.float32)
     v = np.concatenate([np.zeros(1, np.float32)] + out)
     return v
 
 
-def chroma(y: np.ndarray) -> np.ndarray:
+def chroma(y: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
     """Pitch-class energy, L2-normalised per frame.
 
     Invariant to timbre by construction, which is the standard answer to
     "different instruments" — and it comes straight off the STFT, so it needs no
     constant-Q transform. Best when take and reference share HARMONY: voice,
     keys, bass, anything pitched. Useless for unpitched percussion, where
-    melflux is the one to use.
+    melflux is the one to use. `mask`: the bleed removed from `y`, if any — a
+    frame whose remaining energy is under it by BLEED_MASK_DB is residue, and
+    becomes a zero vector, which costs the same against every lag.
     """
     f = np.fft.rfftfreq(NFFT_CHROMA, 1 / SR)
     f[0] = 1e-9
     pc = np.round(12.0 * np.log2(f / 440.0)).astype(int) % 12
     keep = (f > CHROMA_LO_HZ) & (f < CHROMA_HI_HZ)
     masks = [keep & (pc == k) for k in range(12)]
+    bleed = _stft_mag(mask, nfft=NFFT_CHROMA) if mask is not None else None
     out = []
     for mag in _stft_mag(y, nfft=NFFT_CHROMA):
         # Log magnitude, not power: power lets the single loudest partial decide
@@ -146,6 +194,12 @@ def chroma(y: np.ndarray) -> np.ndarray:
         S = np.log1p(1000.0 * mag)
         C = np.stack([S[:, m].sum(axis=1) for m in masks], axis=1)
         C /= (np.linalg.norm(C, axis=1, keepdims=True) + 1e-9)
+        if bleed is not None:
+            B = next(bleed, None)
+            if B is not None and len(B) == len(mag):
+                e_take = (mag[:, keep] ** 2).sum(axis=1)
+                e_bleed = (B[:, keep] ** 2).sum(axis=1)
+                C[e_take < e_bleed * 10 ** (-BLEED_MASK_DB / 10)] = 0.0
         out.append(C.astype(np.float32))
     return np.concatenate(out) if out else np.zeros((1, 12), np.float32)
 
@@ -293,6 +347,74 @@ def summarise(lag_frames, frame_ms, capture_delay_ms, window_sec, trim=0.10):
     }
 
 
+# ── The echo test, and the two ways a confident number is wrong ───────────────
+#
+# Measured on real material on 2026-10-13 (`scripts/p2g_real_bench.py`: 13
+# Dagstuhl ChoirSet quartets leave-one-out, 296 cases; a jazz keys/guitar pair):
+#
+# 1. THE ANSWER CAN BE THE CENTRE IT WAS GIVEN. On the jazz pair, moving
+#    --expect from truth−75 to truth+75 moved the answer 64 → 203 ms: the DTW
+#    was returning the calibration figure, not measuring the take. On choir,
+#    melflux follows the centre by ~23 % (chroma ~0 %). So the band is centred
+#    twice, at expect − S and expect + S, and
+#        echo = (lag₊ − lag₋) / 2S          0 = measures, 1 = returns the centre
+#    Above ECHO_MAX the result is "not measured". Below it, the MIDPOINT of the
+#    two runs is the answer — it cancels the partial pull: choir, clean, melflux
+#    midpoint within 25 ms of truth in 90 % of cases and never off by > 60.
+#
+# 2. THE BLEED IS WHERE THE PLAYER IS — so it is removed, not used to refuse.
+#    The reference leaking into the mic (on headphones too: −28…−32 dB on the
+#    2026-10-13 keys session) is the reference itself, machine-perfect, and
+#    every feature locks onto it. p2g_bleed.py finds it by GCC-PHAT to a tenth
+#    of a millisecond and subtracts it first. A first version also REFUSED any
+#    answer within 20 ms of the bleed's lag, set on a benchmark that put the
+#    bleed 70 ms away from the player. That was wrong: a player in time with
+#    what they hear lands in the take at the device round trip — which is
+#    exactly where the bleed lands. On the real keys session the rule refused
+#    three right answers. The bleed's lag is instead the best CENTRE there is:
+#    the round trip measured on this very take, which a calibration round can
+#    only estimate beforehand (it jumped 10 ms mid-take on that session).
+#
+# The MAD is still reported but no longer decides anything: on real voices a
+# CORRECT answer has a median MAD of 64 ms, so the old 40-ms threshold called
+# every choir result soft (1 of 296 passed it).
+ECHO_SHIFT_MS = 50.0
+ECHO_MAX = 0.5
+# 0.5, not 0.3: on choir a RIGHT melflux answer follows the centre by 0.12–0.46
+# (p10–p90) and the midpoint cancels it; on the jazz pair, where the DTW was not
+# measuring, echo was 0.99–1.45. 0.5 passes 272/296 choir cases (0.3: 223) at
+# the same accuracy and still refuses all 12 jazz ones.
+BLEED_CENTRE_BAND_SEC = 0.25    # the band around a bleed-derived centre
+
+
+def _bleed(ref: np.ndarray, take: np.ndarray):
+    """Find the reference in the take and remove it.
+    Returns (take, removed bleed | None, info | None).
+    Never fatal: an analyser that cannot look for bleed still aligns."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import p2g_bleed as pb
+        assert pb.SR == SR
+        r, t = ref.astype(np.float64), take.astype(np.float64)
+        lags, cc = pb.gcc_phat(r, t, *pb.SEARCH_MS)
+        lag, psr = pb.peak(lags, cc)
+        uniq = pb.uniqueness(lags, cc)
+        L = int(pb.BLOCK_SEC * SR)
+        blocks = [pb.peak(*pb.gcc_phat(r[s:s + L], t[s:s + L], *pb.SEARCH_MS))[0]
+                  for s in range(0, len(t) - L + 1, L)]
+        agree = (sum(abs(b - lag) <= pb.AGREE_MS for b in blocks) / len(blocks)) if blocks else 1.0
+        if not (psr >= pb.PSR_MIN and uniq >= pb.UNIQ_MIN and agree >= pb.AGREE_MIN):
+            return take, None, None
+        clean, est = pb.fit_and_subtract(r, t, lag)
+        return clean.astype(np.float32), est.astype(np.float32), {
+            "lagMs": round(lag, 2), "psr": round(psr, 1),
+            "levelDb": round(pb.db(est) - pb.db(t), 1),
+        }
+    except Exception as e:                      # noqa: BLE001 — see docstring
+        print(f"bleed check skipped: {e}", file=sys.stderr)
+        return take, None, None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("reference")
@@ -305,41 +427,101 @@ def main():
                     help="half-width of the search, in seconds, around --expect")
     ap.add_argument("--window", type=float, default=10.0, help="drift window, seconds")
     ap.add_argument("--capture-delay", type=float, default=0.0)
+    ap.add_argument("--no-echo", action="store_true",
+                    help="one run centred on --expect (the pre-2026-10-13 behaviour)")
+    ap.add_argument("--no-debleed", action="store_true",
+                    help="do not look for the reference in the take")
+    ap.add_argument("--bleed-mask-db", type=float, default=None,
+                    help="tuning only: override BLEED_MASK_DB")
     args = ap.parse_args()
 
     frame_ms = HOP / SR * 1000.0
     try:
         ref, take = decode(args.reference), decode(args.take)
-        feat = mel_flux if args.feature == "melflux" else chroma
-        X, Y = feat(ref), feat(take)
-        if X.ndim == 1:
-            X = (X - X.mean()) / (X.std() + 1e-9)
-            Y = (Y - Y.mean()) / (Y.std() + 1e-9)
-        if len(X) < 16 or len(Y) < 16:
-            raise RuntimeError("one of the files is too short to align")
 
         # Nothing was played. Without this the aligner returns whatever the band
         # happened to favour, which on a silent fixture was a confident +203 ms
         # — the same failure doc 10 records for a silent calibration ("a silent
-        # take used to return a confident 182 ms"). Measured on the FEATURE, not
-        # on peak amplitude: a take of nothing but hum has plenty of amplitude
-        # and no structure to align.
+        # take used to return a confident 182 ms"). Measured on the AUDIO, not
+        # on the feature: a take of nothing but hum has plenty of amplitude and
+        # no structure to align, which is the feature's problem, not this one.
         for name, sig in (("reference", ref), ("take", take)):
             rms = float(np.sqrt(np.mean(sig.astype(np.float64) ** 2))) if len(sig) else 0.0
             if rms < 1e-4:
                 raise RuntimeError(f"the {name} is silent — nothing to align")
 
-        centre = int(round(args.expect / frame_ms))
-        half = int(round(args.band * 1000.0 / frame_ms))
-        lag_frames = banded_dtw(X.astype(np.float32), Y.astype(np.float32), half, centre)
-        out = summarise(lag_frames, frame_ms, args.capture_delay, args.window)
+        bleed, removed = None, None
+        if not args.no_debleed:
+            take, removed, bleed = _bleed(ref, take)
+        if args.bleed_mask_db is not None:
+            global BLEED_MASK_DB
+            BLEED_MASK_DB = args.bleed_mask_db
+
+        if args.feature == "melflux":
+            floor = TOP_DB_AFTER_BLEED if removed is not None else None
+            X, Y = mel_flux(ref, top_db=floor), mel_flux(take, mask=removed, top_db=floor)
+        else:
+            X, Y = chroma(ref), chroma(take, mask=removed)
+        if X.ndim == 1:
+            X = (X - X.mean()) / (X.std() + 1e-9)
+            Y = (Y - Y.mean()) / (Y.std() + 1e-9)
+        if len(X) < 16 or len(Y) < 16:
+            raise RuntimeError("one of the files is too short to align")
+        X, Y = X.astype(np.float32), Y.astype(np.float32)
+
+        # Where to centre: the bleed's lag when there is one (measured on this
+        # take, to a tenth of a ms), else the calibration/sync figure, else 0.
+        centre_ms, band = args.expect, args.band
+        centre_from = "expect" if args.expect > 0 else "none"
+        if bleed:
+            centre_ms, band, centre_from = bleed["lagMs"], min(args.band, BLEED_CENTRE_BAND_SEC), "bleed"
+        half = int(round(band * 1000.0 / frame_ms))
+
+        def one(expect_ms):
+            centre = int(round(expect_ms / frame_ms))
+            s = summarise(banded_dtw(X, Y, half, centre), frame_ms, args.capture_delay, args.window)
+            # A lag pinned against the edge of the band is a boundary, not a
+            # measurement — the same rule as `atSearchEdge` in the sync detector.
+            s["atBandEdge"] = bool(abs(s["lagMs"] - expect_ms) > band * 1000.0 * 0.9)
+            return s
+
+        if args.no_echo:
+            out = one(centre_ms)
+            echo = None
+        else:
+            lo, hi = one(centre_ms - ECHO_SHIFT_MS), one(centre_ms + ECHO_SHIFT_MS)
+            echo = (hi["lagMs"] - lo["lagMs"]) / (2 * ECHO_SHIFT_MS)
+            lag = (lo["lagMs"] + hi["lagMs"]) / 2
+            drift = lo["drift"]
+            if len(lo["drift"]) == len(hi["drift"]):
+                drift = [{"tSec": a["tSec"], "lagMs": round((a["lagMs"] + b["lagMs"]) / 2, 1)}
+                         for a, b in zip(lo["drift"], hi["drift"])]
+            out = {
+                "lagMs": round(lag, 1),
+                "offsetMs": round(lag + args.capture_delay, 1),
+                "madMs": round(max(lo["madMs"], hi["madMs"]), 1),
+                "drift": drift,
+                "driftRangeMs": (round(max(d["lagMs"] for d in drift) - min(d["lagMs"] for d in drift), 1)
+                                 if len(drift) > 1 else 0.0),
+                "atBandEdge": lo["atBandEdge"] or hi["atBandEdge"],
+                "echo": round(echo, 2),
+                "echoLagsMs": [lo["lagMs"], hi["lagMs"]],
+            }
+
+        # The verdict, worst first. "measured" is the only one the UI offers as
+        # a number to trust; the others still show it, with the reason.
+        if echo is not None and abs(echo) > ECHO_MAX:
+            verdict = "follows-centre"
+        elif out["atBandEdge"]:
+            verdict = "band-edge"
+        else:
+            verdict = "measured"
+
         out.update(ok=True, feature=args.feature, frameMs=round(frame_ms, 2),
                    refSec=round(len(ref) / SR, 2), takeSec=round(len(take) / SR, 2),
-                   bandMs=round(args.band * 1000.0, 0), expectMs=args.expect)
-        # A lag pinned against the edge of the band is a boundary, not a
-        # measurement — the same rule as `atSearchEdge` in the sync detector.
-        edge = abs(out["lagMs"] - args.expect) > args.band * 1000.0 * 0.9
-        out["atBandEdge"] = bool(edge)
+                   bandMs=round(band * 1000.0, 0), expectMs=args.expect,
+                   centreMs=round(centre_ms, 1), centreFrom=centre_from,
+                   bleed=bleed, verdict=verdict)
         json.dump(out, sys.stdout)
     except Exception as e:
         json.dump({"ok": False, "reason": str(e)[:300]}, sys.stdout)

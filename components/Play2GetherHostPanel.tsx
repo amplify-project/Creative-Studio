@@ -661,7 +661,12 @@ function AlignRow({ alignment, beatGrid, onAnalyse, analysing, takeFile, takeUpl
   // Two independent methods agreeing is the strongest signal either can give.
   // On the 2026-09 fixtures, "agree within 35 ms" beat either method alone on
   // both yield and worst error (memory: p2g-dtw-alignment).
-  const agree = !!grid && !!dtw && Math.abs(grid.offsetMs - dtw.offsetMs) <= 35;
+  //
+  // Only when the DTW actually MEASURED. A DTW that handed back the figure it
+  // was centred on, next to a pulse grid centred on the same figure, "agrees"
+  // by construction — two copies of the calibration number, not two methods.
+  const dtwMeasured = !!dtw && (dtw.verdict === undefined || dtw.verdict === "measured");
+  const agree = !!grid && dtwMeasured && Math.abs(grid.offsetMs - dtw!.offsetMs) <= 35;
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -774,23 +779,37 @@ function DtwResult({ alignment, slider, onOffsetChange, onAnalyse }: {
   onAnalyse: () => void;
 }) {
   const applied = slider === clampToSlider(alignment.offsetMs);
-  // Colour on the SCATTER, never on the offset — the same rule the sync card
-  // follows. A large offset is a slow monitoring path and is corrected exactly;
-  // a large MAD means the warping path never settled, and no single slider
-  // position places this take.
+  // Colour on whether the number is a MEASUREMENT, never on the offset — the
+  // same rule the sync card follows. A large offset is a slow monitoring path
+  // and is corrected exactly; what must not look trustworthy is a number the
+  // analyser did not actually measure.
   //
-  // 40 ms is not a guess. On the fixture set (`scripts/p2g_dtw_fixtures.py`),
-  // the worst error among results with a MAD at or under 40 was 25.5 ms, and
-  // the lowest MAD among results wrong by more than 60 ms was 52.2 — so there
-  // is a gap, and this sits in it. The scorer prints both numbers; if they ever
-  // cross, this threshold has stopped separating anything and has to move.
-  const soft = alignment.madMs > 40;
+  // Until 2026-10-13 that was decided by the MAD (> 40 ms = soft), set on the
+  // synthetic fixtures. On real voices it separates nothing: a CORRECT choir
+  // answer has a median MAD of 64 ms, so 295 of 296 real cases came out soft,
+  // and the dangerous answer — the calibration figure handed back — often had
+  // a LOW one. The analyser now returns a verdict from the echo test (doc 12,
+  // "The echo test"); the MAD rule only survives for alignments stored before
+  // it existed.
+  const verdict = alignment.verdict;
+  const soft = verdict ? verdict !== "measured" : alignment.madMs > 40;
 
   // The caveats used to be four stacked paragraphs — around sixty words under a
   // single number, on every take, which pushed the next strip off screen and
   // got skipped for exactly that reason. Each one is now a couple of words
   // carrying its full old text in the tooltip, on one line, worst first.
   const flags: { label: string; title: string; strong: boolean }[] = [];
+  if (verdict === "follows-centre") {
+    flags.push({
+      label: "not measured",
+      strong: true,
+      title: `Moving the search centre by 100 ms moved this answer by `
+        + `${Math.round(Math.abs(alignment.echo ?? 1) * 100)} ms: the alignment is handing back `
+        + `the figure it was centred on, not measuring this take. Typical when the take and the `
+        + `reference share little (two different instruments, a sparse part). Use the pulse grid `
+        + `or the slider.`,
+    });
+  }
   if (alignment.driftRangeMs > 60) {
     flags.push({
       label: `drifts ${Math.round(alignment.driftRangeMs)} ms`,
@@ -800,13 +819,14 @@ function DtwResult({ alignment, slider, onOffsetChange, onAnalyse }: {
         + `the number.`,
     });
   }
-  if (soft) {
+  if (!verdict && soft) {
     flags.push({
       label: `soft ±${Math.round(alignment.madMs)}`,
       strong: true,
       title: `The warping path scattered ±${Math.round(alignment.madMs)} ms, so this alignment `
         + `is soft. On repetitive material DTW can settle a beat out and still look confident — `
-        + `check it against the calibration figure before trusting it.`,
+        + `check it against the calibration figure before trusting it. (Measured before the `
+        + `echo test existed — re-run for a verdict.)`,
     });
   }
   if (alignment.atBandEdge) {
@@ -815,6 +835,17 @@ function DtwResult({ alignment, slider, onOffsetChange, onAnalyse }: {
       strong: true,
       title: "The result sat against the edge of the search range, so the real delay may be "
         + "larger than this.",
+    });
+  }
+  if (alignment.bleed) {
+    flags.push({
+      label: `round trip ${Math.round(alignment.bleed.lagMs)} ms`,
+      strong: false,
+      title: `The reference reached this player's mic (headphone leak or speakers, `
+        + `${alignment.bleed.levelDb} dB) ${alignment.bleed.lagMs} ms late — that is this `
+        + `device's round trip, measured on the take itself. It was removed before aligning `
+        + `and the search was centred on it. A player in time with what they hear lands `
+        + `close to this figure.`,
     });
   }
   if (!alignment.centred) {
@@ -838,7 +869,8 @@ function DtwResult({ alignment, slider, onOffsetChange, onAnalyse }: {
                     ${soft ? "text-amber-300" : "text-violet-300"}`}
         title={`DTW against the reference: musical events land ${alignment.lagMs} ms later in `
           + `this take than in the reference, with a ${alignment.madMs} ms scatter along the `
-          + `warping path (feature: ${alignment.feature}).`}
+          + `warping path (feature: ${alignment.feature}`
+          + (alignment.echo !== undefined ? `, echo ${alignment.echo}` : "") + `).`}
       >
         <Activity className="w-3 h-3 shrink-0" />
         DTW {alignment.offsetMs > 0 ? "+" : ""}{Math.round(alignment.offsetMs)} ms
@@ -2240,6 +2272,11 @@ type ServerAlignment = {
   feature: string;
   atBandEdge: boolean;
   centred: boolean;
+  /** See Play2GetherAlignment in app/api/play2gether/utils.ts. Absent on
+   *  alignments stored before the echo test existed. */
+  verdict?: "measured" | "follows-centre" | "band-edge";
+  echo?: number;
+  bleed?: { lagMs: number; psr: number; levelDb: number } | null;
   takeFile: string;
   measuredAt: number;
 };
@@ -2547,6 +2584,7 @@ export default function Play2GetherHostPanel({
             driftRangeMs: data.driftRangeMs ?? 0, drift: data.drift ?? [],
             feature: data.feature, atBandEdge: data.atBandEdge === true,
             centred: data.centred === true,
+            verdict: data.verdict, echo: data.echo, bleed: data.bleed ?? null,
             takeFile: take?.file ?? "", measuredAt: Date.now(),
           },
         },

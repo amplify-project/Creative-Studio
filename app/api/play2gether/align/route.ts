@@ -25,7 +25,8 @@ import {
  */
 
 /** Wall-clock ceiling for one analysis. Measured 2026-09-03: a 5-minute pair
- *  takes 2.4 s and 247 MB. A minute is therefore not a budget, it is a
+ *  takes 2.4 s and 247 MB. Since 2026-10-13 the analyser also looks for bleed
+ *  and runs the DTW twice (the echo test), roughly doubling that. A minute is therefore not a budget, it is a
  *  runaway detector — for a process that would otherwise hold a request open
  *  forever if python were missing or a file were unreadable. */
 const ANALYSIS_TIMEOUT_MS = 60_000;
@@ -40,6 +41,14 @@ type DtwResult = {
   driftRangeMs?: number;
   feature?: string;
   atBandEdge?: boolean;
+  verdict?: "measured" | "follows-centre" | "band-edge";
+  echo?: number;
+  echoLagsMs?: number[];
+  /** What the band was centred on: the bleed's lag (the round trip measured on
+   *  this take) beats the calibration figure, which beats nothing. */
+  centreFrom?: "bleed" | "expect" | "none";
+  centreMs?: number;
+  bleed?: { lagMs: number; psr: number; levelDb: number } | null;
 };
 
 function runAnalysis(args: string[]): Promise<DtwResult> {
@@ -150,7 +159,9 @@ export async function POST(req: NextRequest) {
   ]);
   const tookMs = Date.now() - started;
   console.log(`[p2g/align] ${participantId} feature=${feat} expect=${Math.round(expectMs)}ms -> ` +
-    (result.ok ? `lag=${result.lagMs}ms mad=${result.madMs}ms drift=${result.driftRangeMs}ms`
+    (result.ok ? `lag=${result.lagMs}ms mad=${result.madMs}ms drift=${result.driftRangeMs}ms `
+               + `echo=${result.echo} verdict=${result.verdict}`
+               + (result.bleed ? ` bleed=${result.bleed.lagMs}ms` : "")
                : `refused: ${result.reason}`) + ` (${tookMs}ms)`);
 
   if (!result.ok) {
@@ -176,6 +187,10 @@ export async function POST(req: NextRequest) {
           drift: result.drift ?? [],
           feature: feat,
           atBandEdge: result.atBandEdge === true,
+          centred: expectMs > 0 || result.centreFrom === "bleed",
+          verdict: result.verdict,
+          echo: result.echo,
+          bleed: result.bleed ?? null,
           takeFile: participant.file,
           measuredAt: Date.now(),
         },
@@ -191,5 +206,7 @@ export async function POST(req: NextRequest) {
   // Whether the band had a centre to sit on. Measured on the fixtures: with a
   // centre the aligner scores 7 good / 3 fair / 2 bad, blind it scores 4 / 5 / 3.
   // The host should know which of those two they are looking at.
-  return NextResponse.json({ ok: true, ...result, centred: expectMs > 0, tookMs });
+  return NextResponse.json({
+    ok: true, ...result, centred: expectMs > 0 || result.centreFrom === "bleed", tookMs,
+  });
 }
