@@ -27,7 +27,7 @@ from several async paths, and those paths could race**.
 | Mic/cam publish + toggle + mode reaction | [components/MediaControls.tsx](../../components/MediaControls.tsx) |
 | Audio presets (music/speech) | [components/audioSelector.tsx](../../components/audioSelector.tsx) |
 | Initial publish on join | [components/JoinSetup.tsx](../../components/JoinSetup.tsx) |
-| Play2Gether reference recording (MediaRecorder) | [components/Play2GetherHostPanel.tsx](../../components/Play2GetherHostPanel.tsx) |
+| Play2Gether reference recording (AudioWorklet; MediaRecorder fallback) | [components/Play2GetherHostPanel.tsx](../../components/Play2GetherHostPanel.tsx) |
 | Reference upload (server) | [app/api/play2gether/reference/route.ts](../../app/api/play2gether/reference/route.ts) |
 
 The async publish paths that can all touch the mic:
@@ -76,6 +76,11 @@ newest). This kills the symptom even if a duplicate slips in some other way
 ops — it lags the real publish state; the room is the source of truth.
 
 ## 2. Cross-browser reference recording (fixed)
+
+> Since PR #14 (2026-10-19) the reference is recorded with the take AudioWorklet
+> and uploaded as WAV (see `01-play2gether.md`, *Host reference capture*).
+> Everything below now applies only to the MediaRecorder FALLBACK, used when
+> the engine has no AudioWorklet; it records at 128 kbps.
 
 `Play2GetherHostPanel` records a reference take with `MediaRecorder`. It used to
 hard-code `mimeType: "audio/webm;codecs=opus"`. **Safari (incl. iPadOS) only

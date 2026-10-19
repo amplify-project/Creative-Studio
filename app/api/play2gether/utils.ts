@@ -383,6 +383,87 @@ export function transcodeToOpus(srcPath: string, destPath: string): Promise<bool
   ]);
 }
 
+/** Where a mic-captured reference's loud parts are brought to (gated RMS, as
+ *  `measureLevel` reads it). A mastered track sits around −10…−14; −18 leaves
+ *  headroom for an unmastered, dynamic performance. The 2026-10-17 `blas`
+ *  reference came in at −32…−38, ~20 dB under a master, and Beat This! reads
+ *  the same audio differently 3 dB apart (docs/llm/15-beat-grid.md, trap 5). */
+const REF_TARGET_LEVEL_DB = -18;
+/** Sample-peak ceiling after the gain. The gain is one constant for the whole
+ *  file, so the ceiling is what stops it clipping — no limiter, no compression:
+ *  the waveform keeps its shape and every sample keeps its position. */
+const REF_PEAK_CEILING_DB = -1;
+/** A near-silent capture must not be blown up into room noise. */
+const REF_MAX_GAIN_DB = 30;
+
+/** Full-rate sample peak in dBFS via ffmpeg `volumedetect`. The 8 kHz decode
+ *  the other analyses share low-passes the signal and under-reads peaks, and an
+ *  under-read peak here is a clipped reference. */
+function measurePeakDb(filePath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffmpeg", [
+      "-hide_banner", "-nostats", "-i", filePath, "-af", "volumedetect", "-f", "null", "-",
+    ], { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    proc.stderr?.on("data", (c) => { stderr += c.toString(); });
+    proc.on("close", (code) => {
+      const m = /max_volume:\s*(-?[\d.]+|-inf) dB/.exec(stderr);
+      if (code !== 0 || !m || m[1] === "-inf") return resolve(null);
+      resolve(Number(m[1]));
+    });
+    proc.on("error", () => resolve(null));
+  });
+}
+
+export interface ReferenceLeveling {
+  /** Gain applied, dB (0 when the capture was already loud enough). */
+  gainDb: number;
+  /** Gated RMS level of the capture as it arrived, dBFS. */
+  levelDb: number | null;
+  /** Sample peak of the capture as it arrived, dBFS. */
+  peakDb: number | null;
+}
+
+/**
+ * Store a reference recorded from the host's mic as lossless mono WAV, raised
+ * to a working level.
+ *
+ * WAV, not Opus: the reference is decoded in the browser with
+ * `decodeAudioData` on the sync-critical path and Safari cannot decode Opus
+ * there (same reason promoted takes are stored as WAV — see `transcodeToWav`).
+ * It also means the reference reaches the mix with no lossy generation at all
+ * when it was captured with the AudioWorklet.
+ *
+ * Only BOOSTS, never cuts, and only by one constant gain capped by the peak
+ * ceiling — timing is untouched, which is what alignment cares about. Mic
+ * captures arrive quiet because music mode turns AGC off on purpose.
+ *
+ * Returns null when ffmpeg fails; the caller keeps the upload as it came.
+ */
+export async function levelReferenceToWav(
+  srcPath: string, destPath: string,
+): Promise<ReferenceLeveling | null> {
+  const samples = await decodeMonoPcm(srcPath);
+  const { levelDb } = samples ? measureLevel(samples) : { levelDb: null };
+  const peakDb = await measurePeakDb(srcPath);
+
+  let gainDb = 0;
+  if (levelDb !== null && peakDb !== null) {
+    gainDb = Math.min(REF_TARGET_LEVEL_DB - levelDb, REF_PEAK_CEILING_DB - peakDb, REF_MAX_GAIN_DB);
+    gainDb = Math.max(0, gainDb);
+    if (gainDb < 0.5) gainDb = 0;          // not worth a requantisation
+    gainDb = Math.round(gainDb * 10) / 10;
+  }
+
+  const ok = await runFfmpeg([
+    "-y", "-i", srcPath,
+    ...(gainDb > 0 ? ["-af", `volume=${gainDb}dB`] : []),
+    "-c:a", "pcm_s16le", "-ac", "1",
+    destPath,
+  ]);
+  return ok ? { gainDb, levelDb, peakDb } : null;
+}
+
 /**
  * Decode a take back to lossless WAV. Used when a take is promoted to be the
  * next round's reference: the reference is decoded in the BROWSER with
