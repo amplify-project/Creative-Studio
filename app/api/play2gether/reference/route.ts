@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/auth";
-import { writeFile, unlink } from "fs/promises";
+import { writeFile, unlink, rename } from "fs/promises";
 import { join } from "path";
-import { readSession, writeSession, sessionDir, probeDuration } from "../utils";
+import { readSession, writeSession, sessionDir, probeDuration, levelReferenceToWav } from "../utils";
 
 const ALLOWED_TYPES = new Set([
   "audio/webm",
@@ -64,10 +64,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
+  // "capture" = recorded from the host's mic in the panel (WAV from the
+  // AudioWorklet, or WebM/MP4 from the MediaRecorder fallback). Those are stored
+  // as levelled WAV; an uploaded file is kept exactly as it came.
+  const isCapture = formData.get("source") === "capture";
+
   // Derive file extension from MIME type
-  const ext = extFromMime(mimeType);
-  const filename = `reference${ext}`;
-  const filePath = join(sessionDir(sessionId), filename);
+  const ext = isCapture ? ".wav" : extFromMime(mimeType);
+  let filename = `reference${ext}`;
+  let filePath = join(sessionDir(sessionId), filename);
 
   // A previous reference recorded in a different container (record once in
   // WebM, then upload an MP3) would otherwise sit in the session dir forever,
@@ -77,7 +82,24 @@ export async function POST(req: NextRequest) {
   }
 
   const buffer = Buffer.from(await audioFile.arrayBuffer());
-  await writeFile(filePath, buffer);
+  if (isCapture) {
+    const rawPath = join(sessionDir(sessionId), `reference.raw${extFromMime(mimeType)}`);
+    await writeFile(rawPath, buffer);
+    const leveled = await levelReferenceToWav(rawPath, filePath);
+    if (leveled) {
+      console.log(`[p2g/reference] ${sessionId}: capture level ${leveled.levelDb} dBFS, `
+        + `peak ${leveled.peakDb} dBFS → +${leveled.gainDb} dB`);
+      await unlink(rawPath).catch(() => {});
+    } else {
+      // ffmpeg failed: keep the capture as it came rather than lose it, under
+      // its real container's extension.
+      filename = `reference${extFromMime(mimeType)}`;
+      filePath = join(sessionDir(sessionId), filename);
+      await rename(rawPath, filePath);
+    }
+  } else {
+    await writeFile(filePath, buffer);
+  }
 
   // Resolve the reference duration. ffprobe first (reliable for mp3/wav/m4a
   // and OK for files that carry duration in the container); fall back to the
