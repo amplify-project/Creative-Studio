@@ -7,7 +7,9 @@ and, in doing so, uncovered three places that had quietly assumed one video
 track per participant.
 
 Read this before touching anything that publishes video, or anything that
-decides what goes on the main stage.
+decides what goes on the main stage. For how those tracks are *encoded*
+(resolution, fps, bitrate, codec), see
+[16-video-encoding.md](16-video-encoding.md).
 
 ## The model in one paragraph
 
