@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Track, createLocalVideoTrack } from "livekit-client";
+import { applyMotionHint, loadVideoPrefs, videoCaptureOptions, videoPublishOptions } from "../utils/videoPublish";
 import { useLocalParticipant, useRoomContext, useTracks } from "@livekit/components-react";
 import { runPublishOp } from "../utils/publishQueue";
 
@@ -135,16 +136,17 @@ export function useExtraSources(): ExtraSources {
     setError(null);
     try {
       await runPublishOp(room, "video", async () => {
-        const track = await createLocalVideoTrack({
-          resolution: { width: 1280, height: 720 },
-          deviceId: deviceId || undefined,
-        });
+        const prefs = loadVideoPrefs();
+        const track = await createLocalVideoTrack(
+          videoCaptureOptions(prefs, { deviceId: deviceId || undefined }),
+        );
+        applyMotionHint(track);
         // Not Source.Camera: that is the primary, and several tracks claiming
         // it would make every "is my camera on" check ambiguous. Unknown is in
         // useTracks()'s default source list, so the stage and the host's list
         // pick these up without being taught about extra cameras.
         (track as any).source = Track.Source.Unknown;
-        await room.localParticipant.publishTrack(track, { name: "secondary" });
+        await room.localParticipant.publishTrack(track, videoPublishOptions(prefs, "secondary"));
       });
     } catch (e: any) {
       setError(e?.message ?? String(e));

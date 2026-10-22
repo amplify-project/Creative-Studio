@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createLocalAudioTrack, createLocalVideoTrack, ConnectionQuality, RoomEvent } from "livekit-client";
+import { applyMotionHint, loadVideoPrefs, videoCaptureOptions, videoPublishOptions } from "../app/utils/videoPublish";
 import { AUDIO_MODE_PRESETS, type AudioMode } from "./audioSelector";
 import { captureFor } from "../app/utils/micCapture";
 import { Mic, Video, Loader2, VideoOff, WifiOff, Wifi, Volume2, Play } from "lucide-react";
@@ -224,11 +225,12 @@ export default function JoinSetup({ room, audioMode = "speech", onJoined }: Join
       const preset = AUDIO_MODE_PRESETS[audioMode];
 
       if (withVideo) {
-        const videoTrack = await createLocalVideoTrack({
-          resolution: { width: 1280, height: 720 },
-          deviceId: selectedVideoDevice || undefined,
-        });
-        await room.localParticipant.publishTrack(videoTrack, { name: "primary" });
+        const prefs = loadVideoPrefs();
+        const videoTrack = await createLocalVideoTrack(
+          videoCaptureOptions(prefs, { deviceId: selectedVideoDevice || undefined }),
+        );
+        applyMotionHint(videoTrack);
+        await room.localParticipant.publishTrack(videoTrack, videoPublishOptions(prefs, "primary"));
       }
 
       // Publish audio with mode preset

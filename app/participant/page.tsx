@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react";
 import dynamic from "next/dynamic";
-import { Room, VideoPresets, RoomEvent, ConnectionQuality, DisconnectReason, Track } from "livekit-client";
+import { Room, RoomEvent, ConnectionQuality, DisconnectReason, Track } from "livekit-client";
 import type { RemoteTrackPublication } from "livekit-client";
 import { RoomContext, RoomAudioRenderer } from "@livekit/components-react";
 import "@livekit/components-styles";
@@ -14,6 +14,7 @@ import { ControlPanelProvider } from "../../components/ui/ControlPanelContext";
 import { ReactionsProvider } from "../../components/ui/ReactionsContext";
 import { useSession } from "next-auth/react";
 import { WifiOff, Loader2 } from "lucide-react";
+import { roomVideoDefaults } from "../utils/videoPublish";
 import { makeConnLogger, logQualityChange, netInfo, type QualityTracker } from "../lib/connLog";
 
 const MainStageParticipant = dynamic(() => import("../../components/MainStageParticipant"), { ssr: false });
@@ -29,20 +30,12 @@ export default function ParticipantPage() {
     roomRef.current = new Room({
       adaptiveStream: true,
       dynacast: true,
-      publishDefaults: {
-        simulcast: true,
-        videoCodec: 'vp8',
-        videoSimulcastLayers: [
-          VideoPresets.h720,
-          VideoPresets.h360,
-          VideoPresets.h180,
-        ],
-        degradationPreference: 'maintain-framerate',
-      },
-      videoCaptureDefaults: {
-        resolution: { width: 1280, height: 720 },
-        frameRate: 15,
-      },
+      // Codec, layers, bitrate and capture fps come from one place
+      // (app/utils/videoPublish.ts) so every path that publishes a camera
+      // — including setCameraEnabled() in the quality auto-restore —
+      // encodes the same way. maintain-framerate is set there too: on a
+      // bad link drop resolution, never freeze (frozen looks like a drop).
+      ...roomVideoDefaults(),
       reconnectPolicy: {
         nextRetryDelayInMs: (ctx) => {
           if (ctx.retryCount >= 10) return null;

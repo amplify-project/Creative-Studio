@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { resolveCodec, type VideoCodecChoice } from "../app/utils/videoPublish";
 
 export type VideoCaptureState = {
   deviceId?: string;
@@ -10,7 +11,7 @@ export type VideoCaptureState = {
 
 export type VideoPublishState = {
   simulcast: boolean;
-  priority: number;
+  codec: VideoCodecChoice;
   degradationPreference: "balanced" | "maintain-resolution" | "maintain-framerate";
 };
 
@@ -153,17 +154,17 @@ export default function VideoSettingsPanel({
         </label>
 
         <label className="flex flex-col text-sm mt-2">
-          Priority
-          <input
-            type="number"
-            value={publish.priority}
+          Codec
+          <select
+            value={publish.codec}
             onChange={(e) =>
-              setPublish((p) => ({
-                ...p,
-                priority: Number(e.target.value),
-              }))
+              setPublish((p) => ({ ...p, codec: e.target.value as VideoCodecChoice }))
             }
-          />
+          >
+            <option value="auto">Auto ({resolveCodec("auto").toUpperCase()} on this device)</option>
+            <option value="vp8">VP8</option>
+            <option value="h264">H.264 (hardware on phones)</option>
+          </select>
         </label>
 
         <label className="flex flex-col text-sm mt-2">

@@ -29,9 +29,22 @@ import {
 } from "livekit-client";
 import { Camera, CameraOff, SwitchCamera, Wifi, WifiOff, Loader2 } from "lucide-react";
 import { runPublishOp } from "../utils/publishQueue";
+import {
+  applyMotionHint,
+  loadExtraCameraPrefs,
+  resolveCodec,
+  saveExtraCameraPrefs,
+  videoCaptureOptions,
+  videoPublishOptions,
+  type VideoCodecChoice,
+  type VideoPrefs,
+} from "../utils/videoPublish";
 
-/** Requested capture size. The browser is free to hand back less. */
-const CAPTURE = { width: 640, height: 480 };
+// Capture and encoding come from app/utils/videoPublish.ts. This page used to
+// ask for 640×480 on a bare `new Room()`, which LiveKit encodes at a 500 kbps /
+// 20 fps ceiling: a phone panning over foliage in the 2026-10 field test fell
+// to 5–8 fps for seconds while the picture stayed sharp. Now 960×720 @ 24 fps
+// with a bitrate sized for movement, maintain-framerate, and H.264 on iOS.
 
 type Facing = "user" | "environment";
 
@@ -49,7 +62,9 @@ function usePublishRoom(identity: string, displayName: string, roomName: string)
       try {
         const res = await fetch(`/api/token?identity=${encodeURIComponent(identity)}&name=${encodeURIComponent(displayName)}&role=student&room_name=${encodeURIComponent(roomName)}`);
         const { token } = await res.json();
-        instance = new Room();
+        // dynacast: stop encoding simulcast layers nobody is watching — on a
+        // phone every idle layer is CPU taken from the one on stage.
+        instance = new Room({ dynacast: true });
         await instance.connect(process.env.NEXT_PUBLIC_LIVEKIT_URL!, token);
         instance.localParticipant.setMicrophoneEnabled(false);
         setRoom(instance);
@@ -163,6 +178,7 @@ function CameraPage({ room, roomName }: { room: Room; roomName: string }) {
   const [facing, setFacing] = useState<Facing>("user");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [prefs, setPrefs] = useState<VideoPrefs>(() => loadExtraCameraPrefs());
   const trackRef = useRef<LocalVideoTrack | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -190,11 +206,11 @@ function CameraPage({ room, roomName }: { room: Room; roomName: string }) {
     setBusy(true);
     try {
       await runPublishOp(room, "video", async () => {
-        const track = await createLocalVideoTrack({
-          facingMode: nextFacing,
-          resolution: CAPTURE,
-        });
-        await room.localParticipant.publishTrack(track, { name: "camera" });
+        const track = await createLocalVideoTrack(
+          videoCaptureOptions(prefs, { facingMode: nextFacing }),
+        );
+        applyMotionHint(track);
+        await room.localParticipant.publishTrack(track, videoPublishOptions(prefs, "camera"));
         trackRef.current = track;
         // attach(), not srcObject: LiveKit re-points every attached element
         // when the track restarts, which is what the flip below does.
@@ -229,7 +245,7 @@ function CameraPage({ room, roomName }: { room: Room; roomName: string }) {
     } finally {
       setBusy(false);
     }
-  }, [room]);
+  }, [room, prefs]);
 
   /**
    * Flip front↔back by restarting the existing track, not by republishing.
@@ -247,7 +263,8 @@ function CameraPage({ room, roomName }: { room: Room; roomName: string }) {
     setError(null);
     try {
       await runPublishOp(room, "video", async () => {
-        await trackRef.current!.restartTrack({ facingMode: next, resolution: CAPTURE });
+        await trackRef.current!.restartTrack(videoCaptureOptions(prefs, { facingMode: next }));
+        applyMotionHint(trackRef.current!);
         // Ask the track what it actually got. A device with one camera does
         // not always reject the constraint — some browsers hand back the
         // same camera and say nothing, and a label reading "Back camera"
@@ -266,7 +283,15 @@ function CameraPage({ room, roomName }: { room: Room; roomName: string }) {
     } finally {
       setBusy(false);
     }
-  }, [facing, live, room]);
+  }, [facing, live, room, prefs]);
+
+  // The codec is negotiated at publish time, so it can only change while the
+  // camera is off; the select is disabled while live.
+  const setCodec = (codec: VideoCodecChoice) => {
+    const next = { ...prefs, codec };
+    setPrefs(next);
+    saveExtraCameraPrefs(next);
+  };
 
   return (
     <div className="h-viewport flex flex-col overflow-hidden bg-zinc-950 text-white">
@@ -341,9 +366,23 @@ function CameraPage({ room, roomName }: { room: Room; roomName: string }) {
             <SwitchCamera className="h-5 w-5" />
           </button>
         </div>
-        <p className="mt-2 text-center text-[11px] text-zinc-600">
-          Microphone off · {facing === "user" ? "Front camera" : "Back camera"}
-        </p>
+        <div className="mt-2 flex items-center justify-center gap-2 text-[11px] text-zinc-600">
+          <span>Microphone off · {facing === "user" ? "Front camera" : "Back camera"} ·</span>
+          <label className="flex items-center gap-1">
+            Codec
+            <select
+              value={prefs.codec}
+              disabled={live || busy}
+              onChange={(e) => setCodec(e.target.value as VideoCodecChoice)}
+              title={live ? "Stop the camera to change the codec" : undefined}
+              className="rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px] text-zinc-300 disabled:opacity-50"
+            >
+              <option value="auto">Auto ({resolveCodec("auto").toUpperCase()})</option>
+              <option value="vp8">VP8</option>
+              <option value="h264">H.264</option>
+            </select>
+          </label>
+        </div>
       </footer>
     </div>
   );

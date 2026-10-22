@@ -23,6 +23,14 @@ import {
 } from "lucide-react";
 import BugReportDialog from "./ui/BugReportDialog";
 import { runPublishOp } from "../app/utils/publishQueue";
+import {
+  applyMotionHint,
+  loadVideoPrefs,
+  saveVideoPrefs,
+  videoCaptureOptions,
+  videoPublishOptions,
+  type VideoPrefs,
+} from "../app/utils/videoPublish";
 import { readStoredInputDevice, writeStoredInputDevice } from "../app/hooks/useOutputVolume";
 import { useControlPanelOrNull } from "./ui/ControlPanelContext";
 import { useExtraSources } from "../app/hooks/useExtraSources";
@@ -96,6 +104,7 @@ export default function MediaControls({
   // arrived, so a refreshed host in a music room published in speech.
   const audioModeRef = useRef<AudioMode | undefined>(audioMode);
   audioModeRef.current = audioMode;
+  const [initialVideoPrefs] = useState(() => loadVideoPrefs());
   const [media, setMedia] = useState({
     audio: {
       published: false,
@@ -110,17 +119,20 @@ export default function MediaControls({
     },
     video: {
       published: false,
+      // Seeded from this device's saved prefs (phone vs desktop defaults
+      // live in app/utils/videoPublish.ts), so what the panel shows is what
+      // the next publish will actually use.
       capture: {
-        width: 1280,
-        height: 720,
-        frameRate: 15,
+        width: initialVideoPrefs.width,
+        height: initialVideoPrefs.height,
+        frameRate: initialVideoPrefs.frameRate,
         facingMode: "user",
         deviceId: undefined,
       } as VideoCaptureState,
       publish: {
-        simulcast: true,
-        priority: 1,
-        degradationPreference: "maintain-framerate",
+        simulcast: initialVideoPrefs.simulcast,
+        codec: initialVideoPrefs.codec,
+        degradationPreference: initialVideoPrefs.degradationPreference,
       } as VideoPublishState,
     },
     ui: {
@@ -600,8 +612,45 @@ export default function MediaControls({
   /** --------------------------------------------------------------
    * 🎥 Toggle VIDEO
    * -------------------------------------------------------------- */
-  const toggleVideo = async () => {
+  const prefsFrom = (capture: VideoCaptureState, publish: VideoPublishState): VideoPrefs => ({
+    width: capture.width,
+    height: capture.height,
+    frameRate: capture.frameRate,
+    codec: publish.codec,
+    simulcast: publish.simulcast,
+    degradationPreference: publish.degradationPreference,
+  });
+
+  /** Capture + publish the primary camera with the given settings. Must run
+   *  inside the video lane. Every option the settings panel shows is applied
+   *  here — the panel used to collect fps / simulcast / degradation and this
+   *  path dropped all of it, publishing a bare 720p track at whatever fps the
+   *  camera chose. */
+  const publishCamera = async (
+    capture: VideoCaptureState,
+    publish: VideoPublishState,
+    deviceId?: string,
+  ) => {
     if (!room) return;
+    const prefs = prefsFrom(capture, publish);
+    const track = await createLocalVideoTrack(
+      videoCaptureOptions(prefs, { deviceId, facingMode: capture.facingMode as any }),
+    );
+    applyMotionHint(track);
+    await room.localParticipant.publishTrack(track, videoPublishOptions(prefs, "primary"));
+  };
+
+  /** Settings panel "Publish": remember the choice and start the camera. */
+  const startVideoWith = async (next: { capture: VideoCaptureState; publish: VideoPublishState }) => {
+    saveVideoPrefs(prefsFrom(next.capture, next.publish));
+    setMedia((m) => ({ ...m, video: { ...m.video, capture: next.capture, publish: next.publish } }));
+    await toggleVideo(next);
+  };
+
+  const toggleVideo = async (next?: { capture: VideoCaptureState; publish: VideoPublishState }) => {
+    if (!room) return;
+    const capture = next?.capture ?? media.video.capture;
+    const publish = next?.publish ?? media.video.publish;
 
     // Serialized on the shared video lane, and scoped to `Source.Camera`.
     // This used to match on `kind === Video`, which meant *any* video track:
@@ -616,10 +665,7 @@ export default function MediaControls({
 
       if (!cameraPub) {
         try {
-          const track = await createLocalVideoTrack({
-            resolution: { width: media.video.capture.width, height: media.video.capture.height },
-          });
-          await room.localParticipant.publishTrack(track, { name: "primary" });
+          await publishCamera(capture, publish, capture.deviceId || undefined);
           setMedia((m) => ({
             ...m,
             video: { ...m.video, published: true },
@@ -647,11 +693,7 @@ export default function MediaControls({
    *  retryAudioWithDevice — throws on failure to keep the modal open. */
   const retryVideoWithDevice = async (deviceId: string) => {
     if (!room) throw new Error("Room not available");
-    const track = await createLocalVideoTrack({
-      resolution: { width: media.video.capture.width, height: media.video.capture.height },
-      deviceId,
-    });
-    await room.localParticipant.publishTrack(track, { name: "primary" });
+    await publishCamera(media.video.capture, media.video.publish, deviceId);
     setMedia((m) => ({
       ...m,
       video: { ...m.video, capture: { ...m.video.capture, deviceId }, published: true },
@@ -692,7 +734,7 @@ export default function MediaControls({
         <button
           onClick={
             media.video.published
-              ? toggleVideo
+              ? () => toggleVideo()
               : () => setMedia((m) => ({ ...m, ui: { ...m.ui, showVideoSettings: true } }))
           }
           title={media.video.published ? "Stop video" : "Start video"}
@@ -1012,7 +1054,7 @@ export default function MediaControls({
             <VideoSettingsPanel
               initialCapture={media.video.capture}
               initialPublish={media.video.publish}
-              onSave={toggleVideo}
+              onSave={startVideoWith}
               onClose={() => setMedia((m) => ({ ...m, ui: { ...m.ui, showVideoSettings: false } }))}
             />
           </div>
