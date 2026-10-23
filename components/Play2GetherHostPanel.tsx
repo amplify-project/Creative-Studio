@@ -4,7 +4,7 @@ import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 import { Rnd } from "react-rnd";
 import {
   usePlay2GetherSession, scheduleMetronomeClick, MAX_RECORDING_DURATION_SEC,
-  CALIB_ROUND_LEAD_MS, type P2GPhase,
+  CALIB_ROUND_LEAD_MS, encodeWAV, type P2GPhase,
 } from "../app/hooks/usePlay2GetherSession";
 import { useRoomContext } from "@livekit/components-react";
 import { Track } from "livekit-client";
@@ -2306,6 +2306,72 @@ function pickCaptureMime(): string | null {
   return CAPTURE_MIME_CANDIDATES.find((m) => MediaRecorder.isTypeSupported(m)) ?? null;
 }
 
+/** Bitrate for the MediaRecorder FALLBACK only (no AudioWorklet). Was 64k —
+ *  fine for speech, audibly short of transparent for music, and the mix
+ *  encodes it a second time. The server decodes it to WAV on arrival anyway. */
+const CAPTURE_FALLBACK_BITRATE = 128_000;
+
+/** The normal path: the same AudioWorklet the takes are recorded with
+ *  (`public/play2gether-capture-worklet.js`). Lossless, and it starts on the
+ *  audio clock instead of MediaRecorder's tens of ms after `start()`. */
+function workletCaptureSupported(): boolean {
+  if (typeof window === "undefined") return false;
+  const AC = window.AudioContext;
+  return !!AC && typeof AudioWorkletNode !== "undefined" && "audioWorklet" in AC.prototype;
+}
+
+type RefCapture =
+  | { kind: "worklet"; ctx: AudioContext; node: AudioWorkletNode; chunks: Float32Array[];
+      done: Promise<void>; startedAt: number }
+  | { kind: "recorder"; recorder: MediaRecorder; chunks: Blob[]; mime: string; startedAt: number };
+
+/** Build and START a worklet capture of `track`. Throws if anything in the
+ *  graph can't be built — the caller falls back to MediaRecorder. */
+async function startWorkletCapture(track: MediaStreamTrack): Promise<RefCapture> {
+  // 48 kHz like the takes (see the comment in usePlay2GetherSession `arm`).
+  let ctx: AudioContext;
+  try { ctx = new AudioContext({ sampleRate: 48000 }); } catch { ctx = new AudioContext(); }
+  ctx.resume().catch(() => {});
+  try {
+    await ctx.audioWorklet.addModule("/play2gether-capture-worklet.js");
+    let src: MediaStreamAudioSourceNode;
+    try {
+      src = ctx.createMediaStreamSource(new MediaStream([track]));
+    } catch {
+      // Firefox refuses a mic whose rate differs from the context's.
+      ctx.close().catch(() => {});
+      ctx = new AudioContext();
+      ctx.resume().catch(() => {});
+      await ctx.audioWorklet.addModule("/play2gether-capture-worklet.js");
+      src = ctx.createMediaStreamSource(new MediaStream([track]));
+    }
+    const node = new AudioWorkletNode(ctx, "p2g-capture");
+    src.connect(node);
+    const sink = ctx.createGain();
+    sink.gain.value = 0;
+    node.connect(sink);
+    sink.connect(ctx.destination);
+
+    const chunks: Float32Array[] = [];
+    let resolveDone!: () => void;
+    const done = new Promise<void>((r) => { resolveDone = r; });
+    node.port.onmessage = (e) => {
+      if (e.data instanceof Float32Array) chunks.push(e.data);
+      else if (e.data && e.data.type === "done") {
+        if (e.data.zeroRuns > 0) {
+          console.warn("[p2g/ref-capture] gaps in the reference capture:", e.data);
+        }
+        resolveDone();
+      }
+    };
+    node.port.postMessage({ cmd: "start" });
+    return { kind: "worklet", ctx, node, chunks, done, startedAt: performance.now() };
+  } catch (err) {
+    ctx.close().catch(() => {});
+    throw err;
+  }
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 /**
@@ -2343,19 +2409,27 @@ export default function Play2GetherHostPanel({
   // Live elapsed seconds while recording the reference from the mic, so the
   // host can see how long the take is running.
   const [captureElapsed, setCaptureElapsed] = useState(0);
-  const captureRecorderRef                  = useRef<MediaRecorder | null>(null);
-  // Wall-clock start of the current capture. MediaRecorder's WebM output
-  // doesn't carry duration in the EBML header → server-side ffprobe returns
-  // N/A, so we measure the duration here and ship it as a hint to the server.
+  // The capture in progress: the AudioWorklet (normal) or MediaRecorder
+  // (fallback for an engine without AudioWorklet). Null when idle.
+  const refCaptureRef                       = useRef<RefCapture | null>(null);
+  // Set while the worklet module is loading, so a double click can't start two.
+  const captureArmingRef                    = useRef(false);
+  // Wall-clock start of the current capture, for the elapsed-time display and
+  // as the duration hint (MediaRecorder WebM has no duration in its header).
   const captureStartedAtRef                 = useRef<number>(0);
-  const captureChunksRef                    = useRef<Blob[]>([]);
-  // The container chosen at start, reused for the final Blob so the server
-  // derives the right extension. Null when this browser can't record at all.
-  const captureMimeRef                      = useRef<string | null>(null);
-  // Resolved on the client (MediaRecorder is undefined during SSR) so we can
-  // disable the Record button instead of letting it throw on Safari/iPad.
+  // Resolved on the client (AudioWorklet/MediaRecorder are undefined during
+  // SSR) so we can disable the Record button instead of letting it throw.
   const [captureSupported, setCaptureSupported] = useState(true);
-  useEffect(() => { setCaptureSupported(pickCaptureMime() !== null); }, []);
+  useEffect(() => {
+    setCaptureSupported(workletCaptureSupported() || pickCaptureMime() !== null);
+  }, []);
+  // Leaving the panel mid-capture: release the mic graph.
+  useEffect(() => () => {
+    const c = refCaptureRef.current;
+    refCaptureRef.current = null;
+    if (c?.kind === "worklet") c.ctx.close().catch(() => {});
+    else if (c?.kind === "recorder" && c.recorder.state !== "inactive") c.recorder.stop();
+  }, []);
 
   // UI feedback
   const [busy, setBusy]   = useState(false);
@@ -2766,50 +2840,84 @@ export default function Play2GetherHostPanel({
     e.target.value = "";
   };
 
-  const handleStartCapture = () => {
-    const mime = pickCaptureMime();
-    if (!mime) {
-      // No supported container → don't construct MediaRecorder (it would throw
-      // a NotSupportedError that the user can't see). Tell them instead.
-      setError("Recording isn't supported in this browser. Use Chrome on desktop, or upload a file.");
-      return;
-    }
+  const handleStartCapture = async () => {
+    if (refCaptureRef.current || captureArmingRef.current) return;
     const pub = room?.localParticipant.getTrackPublication(Track.Source.Microphone);
     const rawTrack = pub?.track?.mediaStreamTrack;
     if (!rawTrack) { setError("No mic track available"); return; }
-    captureMimeRef.current = mime;
-    captureChunksRef.current = [];
-    const recorder = new MediaRecorder(new MediaStream([rawTrack]), {
-      mimeType: mime, audioBitsPerSecond: 64_000,
-    });
-    recorder.ondataavailable = (e) => { if (e.data.size > 0) captureChunksRef.current.push(e.data); };
-    recorder.start(500);
-    captureRecorderRef.current = recorder;
-    captureStartedAtRef.current = performance.now();
-    setIsCapturing(true);
+
+    captureArmingRef.current = true;
+    try {
+      let capture: RefCapture | null = null;
+      if (workletCaptureSupported()) {
+        try {
+          capture = await startWorkletCapture(rawTrack);
+        } catch (err) {
+          console.warn("[p2g/ref-capture] AudioWorklet capture failed — falling back to MediaRecorder:", err);
+        }
+      }
+      if (!capture) {
+        const mime = pickCaptureMime();
+        if (!mime) {
+          setError("Recording isn't supported in this browser. Use Chrome on desktop, or upload a file.");
+          return;
+        }
+        const chunks: Blob[] = [];
+        const recorder = new MediaRecorder(new MediaStream([rawTrack]), {
+          mimeType: mime, audioBitsPerSecond: CAPTURE_FALLBACK_BITRATE,
+        });
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+        recorder.start(500);
+        capture = { kind: "recorder", recorder, chunks, mime, startedAt: performance.now() };
+      }
+      refCaptureRef.current = capture;
+      captureStartedAtRef.current = capture.startedAt;
+      setIsCapturing(true);
+    } finally {
+      captureArmingRef.current = false;
+    }
   };
 
   const handleStopCapture = () => {
-    const recorder = captureRecorderRef.current;
-    if (!recorder) return;
-    // Snapshot duration BEFORE stop() fires onstop asynchronously.
-    const durationSec = (performance.now() - captureStartedAtRef.current) / 1000;
-    recorder.onstop = () => {
+    const capture = refCaptureRef.current;
+    if (!capture) return;
+    refCaptureRef.current = null;
+    setIsCapturing(false);
+
+    if (capture.kind === "worklet") {
+      // The worklet answers `stop` with its partial buffer and then `done`
+      // (port messages are ordered), so after `done` every sample is here.
+      capture.node.port.postMessage({ cmd: "stop" });
+      wrap(async () => {
+        await Promise.race([capture.done, new Promise((r) => setTimeout(r, 2000))]);
+        const sampleRate = capture.ctx.sampleRate;
+        capture.ctx.close().catch(() => {});
+        const samples = capture.chunks.reduce((n, c) => n + c.length, 0);
+        if (samples === 0) throw new Error("Nothing was recorded — check the mic and try again");
+        const wav = encodeWAV(capture.chunks, sampleRate);
+        // Duration from the samples themselves: exact, unlike the wall clock.
+        await host.uploadReference(wav, "audio/wav", samples / sampleRate, "capture");
+      });
+      return;
+    }
+
+    // MediaRecorder fallback. Snapshot duration BEFORE stop() fires onstop.
+    const durationSec = (performance.now() - capture.startedAt) / 1000;
+    capture.recorder.onstop = () => {
       // Same container we recorded with, so the server picks the right
       // extension (MP4 on Safari, WebM on Chromium).
-      const blob = new Blob(captureChunksRef.current, { type: captureMimeRef.current ?? "audio/webm" });
-      wrap(() => host.uploadReference(blob, undefined, durationSec));
+      const blob = new Blob(capture.chunks, { type: capture.mime });
+      wrap(() => host.uploadReference(blob, capture.mime, durationSec, "capture"));
     };
-    recorder.stop();
-    captureRecorderRef.current = null;
-    setIsCapturing(false);
+    capture.recorder.stop();
   };
 
   // Metronome while capturing the reference from the mic — a guide for whoever
   // is playing the base, nothing else. Deliberately NOT phase-locked to
   // anything: the round metronome hangs off `clapAt` (tick k=0 lands on the
   // clap, which is also the reference's t=0), but there is no clap here, and
-  // MediaRecorder starts tens of ms after `start()` returns, so pretending this
+  // the capture runs on its own AudioContext (or, in the MediaRecorder
+  // fallback, starts tens of ms after `start()` returns), so pretending this
   // click defines a grid the base sits on would be a lie. It free-runs from the
   // moment recording starts.
   //
@@ -3183,7 +3291,7 @@ export default function Play2GetherHostPanel({
                     </span>
                   </button>
                 ) : (
-                  <button onClick={handleStartCapture} disabled={busy || !captureSupported}
+                  <button onClick={() => { void handleStartCapture(); }} disabled={busy || !captureSupported}
                     title={captureSupported ? "Record reference from mic" : "Recording isn't supported in this browser — use Chrome on desktop or upload a file"}
                     className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg
                                bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-medium">

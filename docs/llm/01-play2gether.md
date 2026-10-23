@@ -59,7 +59,7 @@ makes ffmpeg skip the track entirely.
 | [components/LyricsOverlay.tsx](../../components/LyricsOverlay.tsx) | LRC parser + bottom-banner UI (`Play2GetherLyricsBanner` is the entry component that calls the hook). |
 | [public/play2gether-capture-worklet.js](../../public/play2gether-capture-worklet.js) | AudioWorkletProcessor: accumulates 4800-sample batches, writes exactly 128 samples per `process()` (zero-pad on empty input). On `stop` ships the partial batch, then a `done` message with gap counters (see *The end of a take*). |
 | [app/api/play2gether/session/route.ts](../../app/api/play2gether/session/route.ts) | POST create session, GET fetch metadata. |
-| [app/api/play2gether/reference/route.ts](../../app/api/play2gether/reference/route.ts) | POST audio upload. Runs `probeDuration` and stores `referenceDuration`. Accepts optional `durationSec` form field as fallback for WebM. |
+| [app/api/play2gether/reference/route.ts](../../app/api/play2gether/reference/route.ts) | POST audio upload. Runs `probeDuration` and stores `referenceDuration`. Accepts optional `durationSec` form field as fallback for WebM. With `source=capture` (host's mic) stores levelled WAV via `levelReferenceToWav` — see *Host reference capture*. |
 | [app/api/play2gether/lyrics/route.ts](../../app/api/play2gether/lyrics/route.ts) | POST .lrc upload (max 200 KB), DELETE. |
 | [app/api/play2gether/record/route.ts](../../app/api/play2gether/record/route.ts) | POST upload a take — **streaming**: metadata in query params, raw WAV body piped to a UUID temp file, then atomically renamed under `withSessionLock`. Computes take key (`identity` / `identity_2` / …). DELETE removes a take. |
 | [app/api/play2gether/ready/route.ts](../../app/api/play2gether/ready/route.ts) | Mark / unmark participant ready during rehearsal. |
@@ -568,6 +568,43 @@ just waited for a take that never came.
 per session by the host so memory pressure is bounded; streaming refactor
 is on the table if larger references become common.
 
+### Host reference capture: worklet → levelled WAV (2026-10-19, PR #14)
+
+The host's "Record" button (`Play2GetherHostPanel.tsx` `handleStartCapture` /
+`startWorkletCapture`) records the published mic track through the SAME
+AudioWorklet as the takes, on a fresh 48 kHz AudioContext, and uploads
+`encodeWAV(...)` (exported from `usePlay2GetherSession.ts`) with
+`source=capture`. Duration comes from the sample count, not the wall clock.
+
+Before, it was `MediaRecorder` at **Opus 64 kbps** (AAC on Safari): one lossy
+generation before the mix even started, plus MediaRecorder's start delay.
+MediaRecorder is now only the fallback for engines without AudioWorklet, at
+**128 kbps**; the server decodes that to WAV too.
+
+Server (`reference/route.ts` → `levelReferenceToWav` in `utils.ts`), only for
+`source=capture` (uploaded files are stored as they came):
+- Stored as mono `pcm_s16le` WAV: lossless, and Safari can `decodeAudioData`
+  it on the sync-critical path (same reason promoted takes are WAV).
+- **Levelled with ONE constant gain**: towards −18 dBFS gated level
+  (`measureLevel`), capped by a −1 dBFS sample peak (ffmpeg `volumedetect` at
+  full rate — the 8 kHz decode under-reads peaks) and +30 dB. Boost only, no
+  limiter, so every sample keeps its position. Mic captures arrive quiet
+  because music mode turns AGC off (`blas` was −32…−38 dBFS), and Beat This! is
+  level-sensitive (`15-beat-grid.md`).
+- Logs `[p2g/reference] <session>: capture level X dBFS, peak Y dBFS → +Z dB`.
+- If ffmpeg fails, the raw capture is kept under its own extension.
+
+Seen in the first field test (Mac/Safari, 2026-10-19):
+- **One transient caps the boost.** A noise at Stop reached −1 dBFS 20 dB above
+  the rest, so the body stayed at ~−36 dBFS. It also dominates the waveform
+  (envelopes are drawn normalised to their own peak).
+- **A laptop's built-in mic + a big boost = audible background noise.** The gain
+  raises noise and music alike; a headset mic sounded much better.
+- Safari's mic source delivered ~150 ms of exact zeros at the start. Harmless:
+  it is part of the reference everyone plays against.
+- A take that is silent (peak −61 dBFS) is drawn as a FULL waveform for the same
+  normalisation reason — read its `peakDb`, not the drawing.
+
 ### Reference playback is scheduled on the audio clock, not `play()`ed
 
 **Rule — never go back to `el.play()` for the take.** During a round the
@@ -719,14 +756,14 @@ identical).
 
 > **Rule — the base metronome does NOT define a grid.** It is a tempo guide for
 > whoever plays the base, nothing more. Making the base's `t=0` land on a
-> downbeat would need the capture to *start* on one, and the reference is
-> recorded with `MediaRecorder`, which starts tens of ms after `start()`
-> returns — the very reason the takes use the worklet instead. At 120 BPM an
+> downbeat would need the capture to *start* on one. Since PR #14 the reference
+> is captured with the take worklet, but on its OWN AudioContext with no
+> prewarm or start-gate against the metronome's context (and the MediaRecorder
+> fallback still starts tens of ms after `start()` returns). At 120 BPM an
 > 80 ms error is 16 % of a beat, plainly audible against the round metronome,
 > so the click in later rounds is not guaranteed to agree with the music in the
-> base. If that ever needs to hold, the fix is to capture the reference through
-> the take path (prewarm + start-gate + `captureDelayMs`), not to add a
-> count-in to `MediaRecorder`.
+> base. If that ever needs to hold, the fix is to run the metronome on the
+> capture's own context and start the worklet's gate on a scheduled tick.
 
 Bleed is worse here than in a round: a click captured into the base is
 permanent — it plays under every subsequent round and lands in every mix. The

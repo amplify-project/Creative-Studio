@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react";
 import dynamic from "next/dynamic";
-import { Room, VideoPresets, RoomEvent, ConnectionQuality, DisconnectReason, Track } from "livekit-client";
+import { Room, RoomEvent, ConnectionQuality, DisconnectReason, Track } from "livekit-client";
 import type { RemoteTrackPublication } from "livekit-client";
 import { RoomContext, RoomAudioRenderer } from "@livekit/components-react";
 import "@livekit/components-styles";
@@ -15,6 +15,7 @@ import { ReactionsProvider } from "../../components/ui/ReactionsContext";
 import { MicIssuesProvider } from "../../components/ui/MicIssuesContext";
 import { useSession } from "next-auth/react";
 import { WifiOff, Loader2 } from "lucide-react";
+import { roomVideoDefaults } from "../utils/videoPublish";
 import { makeConnLogger, logQualityChange, netInfo, type QualityTracker } from "../lib/connLog";
 
 const HostContent = dynamic(() => import("../../components/HostContent"), {
@@ -32,22 +33,12 @@ export default function HostPage() {
     roomRef.current = new Room({
       adaptiveStream: true,
       dynacast: true,
-      publishDefaults: {
-        simulcast: true,
-        videoCodec: 'vp8',
-        videoSimulcastLayers: [
-          VideoPresets.h720,
-          VideoPresets.h360,
-          VideoPresets.h180,
-        ],
-        // maintain-framerate: on bad network, reduce resolution rather than
-        // freezing the video entirely. Frozen video looks like a disconnect.
-        degradationPreference: 'maintain-framerate',
-      },
-      videoCaptureDefaults: {
-        resolution: { width: 1280, height: 720 },
-        frameRate: 15,
-      },
+      // Codec, layers, bitrate and capture fps come from one place
+      // (app/utils/videoPublish.ts) so every path that publishes a camera
+      // — including setCameraEnabled() in the quality auto-restore —
+      // encodes the same way. maintain-framerate is set there too: on a
+      // bad link drop resolution, never freeze (frozen looks like a drop).
+      ...roomVideoDefaults(),
       // More aggressive reconnect: up to 10 retries, cap at 15 s per attempt.
       // Default policy gives up after ~3 retries (~15 s total) — too short for
       // a 4G signal drop that might last 20–30 s.

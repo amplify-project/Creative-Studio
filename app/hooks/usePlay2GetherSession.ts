@@ -231,7 +231,10 @@ export type UsePlay2GetherReturn = {
     /** Upload a reference track. `durationSec` is a wall-clock hint (used by
      * the server when ffprobe can't read the container duration — common
      * with MediaRecorder-generated WebM). */
-    uploadReference: (file: File | Blob, mimeType?: string, durationSec?: number) => Promise<string>;
+    /** `source: "capture"` marks a reference recorded from the host's mic: the
+     *  server stores it as lossless WAV and levels it (see reference/route.ts).
+     *  Uploaded files are kept exactly as they came. */
+    uploadReference: (file: File | Blob, mimeType?: string, durationSec?: number, source?: "capture" | "file") => Promise<string>;
     /** Remove the current reference track so the host can re-record or upload
      * a different one. Deletes the file server-side and clears shared state. */
     clearReference: () => Promise<void>;
@@ -2205,14 +2208,16 @@ export function usePlay2GetherSession(
   }, [patchP2G]);
 
   const uploadReference = useCallback(
-    async (fileOrBlob: File | Blob, mimeType?: string, durationSec?: number) => {
+    async (fileOrBlob: File | Blob, mimeType?: string, durationSec?: number, source?: "capture" | "file") => {
       if (!p2g.sessionId) throw new Error("No active session");
+      const type = mimeType ?? (fileOrBlob.type || "audio/webm");
       const file = fileOrBlob instanceof File
         ? fileOrBlob
-        : new File([fileOrBlob], "reference.webm", { type: mimeType ?? "audio/webm" });
+        : new File([fileOrBlob], type.startsWith("audio/wav") ? "reference.wav" : "reference.webm", { type });
       const form = new FormData();
       form.append("sessionId", p2g.sessionId);
       form.append("audio", file);
+      if (source) form.append("source", source);
       if (typeof durationSec === "number" && durationSec > 0) {
         form.append("durationSec", String(durationSec));
       }
@@ -2725,7 +2730,7 @@ async function uploadRecording(
   }
 }
 
-function encodeWAV(chunks: Float32Array[], sampleRate: number): Blob {
+export function encodeWAV(chunks: Float32Array[], sampleRate: number): Blob {
   const totalSamples = chunks.reduce((sum, c) => sum + c.length, 0);
   const dataBytes = totalSamples * 2;
   const buf = new ArrayBuffer(44 + dataBytes);

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { BITRATE_CHOICES_KBPS, resolveCodec, topLayerBitrate, type VideoCodecChoice } from "../app/utils/videoPublish";
 
 export type VideoCaptureState = {
   deviceId?: string;
@@ -10,7 +11,9 @@ export type VideoCaptureState = {
 
 export type VideoPublishState = {
   simulcast: boolean;
-  priority: number;
+  codec: VideoCodecChoice;
+  /** Top-layer ceiling in kbps; 0 = auto. */
+  maxBitrateKbps: number;
   degradationPreference: "balanced" | "maintain-resolution" | "maintain-framerate";
 };
 
@@ -153,17 +156,35 @@ export default function VideoSettingsPanel({
         </label>
 
         <label className="flex flex-col text-sm mt-2">
-          Priority
-          <input
-            type="number"
-            value={publish.priority}
+          Codec
+          <select
+            value={publish.codec}
             onChange={(e) =>
-              setPublish((p) => ({
-                ...p,
-                priority: Number(e.target.value),
-              }))
+              setPublish((p) => ({ ...p, codec: e.target.value as VideoCodecChoice }))
             }
-          />
+          >
+            <option value="auto">Auto ({resolveCodec("auto").toUpperCase()} on this device)</option>
+            <option value="vp8">VP8</option>
+            <option value="h264">H.264 (hardware on phones)</option>
+          </select>
+        </label>
+
+        <label className="flex flex-col text-sm mt-2">
+          Max bitrate
+          <select
+            value={publish.maxBitrateKbps}
+            onChange={(e) =>
+              setPublish((p) => ({ ...p, maxBitrateKbps: Number(e.target.value) }))
+            }
+          >
+            {BITRATE_CHOICES_KBPS.map((k) => (
+              <option key={k} value={k}>
+                {k === 0
+                  ? `Auto (${(topLayerBitrate(capture.width, capture.height, capture.frameRate) / 1e6).toFixed(1)} Mbps)`
+                  : `${k / 1000} Mbps`}
+              </option>
+            ))}
+          </select>
         </label>
 
         <label className="flex flex-col text-sm mt-2">
