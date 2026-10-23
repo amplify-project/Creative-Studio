@@ -33,7 +33,12 @@ export type VideoPrefs = {
   codec: VideoCodecChoice;
   simulcast: boolean;
   degradationPreference: DegradationPref;
+  /** Ceiling for the top layer in kbps; 0 = auto (sized to the capture). */
+  maxBitrateKbps: number;
 };
+
+/** Choices offered in the settings UIs. 0 = auto. */
+export const BITRATE_CHOICES_KBPS = [0, 1000, 1500, 2000, 3000, 4000, 6000] as const;
 
 /** What we know about the device. Injectable so the rules are testable. */
 export type DeviceEnv = { ua: string; platform: string; maxTouchPoints: number };
@@ -74,6 +79,7 @@ export function defaultVideoPrefs(env: DeviceEnv = currentEnv()): VideoPrefs {
     codec: "auto",
     simulcast: true,
     degradationPreference: "maintain-framerate",
+    maxBitrateKbps: 0,
   };
 }
 
@@ -87,16 +93,20 @@ export function extraCameraPrefs(): VideoPrefs {
     codec: "auto",
     simulcast: true,
     degradationPreference: "maintain-framerate",
+    maxBitrateKbps: 0,
   };
 }
 
-// Bits per pixel per frame for the top layer. ~0.1 holds up with a moving
-// handheld camera; LiveKit's presets sit nearer 0.05–0.08 (tuned for talking
-// heads), and the 640×480 default the /publish page fell into is 0.08 at
-// 20 fps — which is where the 5–8 fps came from.
-const BITS_PER_PIXEL = 0.1;
+// Bits per pixel per frame for the top layer. LiveKit's presets sit near
+// 0.05–0.08 (tuned for talking heads); the 640×480 default the /publish page
+// fell into is 0.08 at 20 fps — which is where the 5–8 fps came from. 0.1 was
+// the first try; a phone test on good wifi (2026-10-23) still looked like it
+// was short of bits when moving (codec made no difference, so not CPU), so
+// 0.15. maxBitrate is a ceiling, not a target: on a weak uplink the
+// bandwidth estimator still holds it lower.
+const BITS_PER_PIXEL = 0.15;
 const MIN_BITRATE = 100_000;
-const MAX_BITRATE = 2_500_000;
+const MAX_BITRATE = 4_000_000;
 
 export function topLayerBitrate(width: number, height: number, fps: number): number {
   const raw = width * height * fps * BITS_PER_PIXEL;
@@ -140,7 +150,9 @@ export function videoPublishOptions(
     videoCodec: resolveCodec(prefs.codec, env),
     simulcast: prefs.simulcast,
     videoEncoding: {
-      maxBitrate: topLayerBitrate(prefs.width, prefs.height, prefs.frameRate),
+      maxBitrate: prefs.maxBitrateKbps > 0
+        ? prefs.maxBitrateKbps * 1000
+        : topLayerBitrate(prefs.width, prefs.height, prefs.frameRate),
       maxFramerate: prefs.frameRate,
     },
     videoSimulcastLayers: simulcastLayers(prefs, mobile),
@@ -183,6 +195,7 @@ function sanitize(raw: any, base: VideoPrefs): VideoPrefs {
     width: num(raw.width, 160, 3840, base.width),
     height: num(raw.height, 120, 2160, base.height),
     frameRate: num(raw.frameRate, 5, 60, base.frameRate),
+    maxBitrateKbps: num(raw.maxBitrateKbps, 0, 20_000, base.maxBitrateKbps),
     codec: ["auto", "vp8", "h264"].includes(raw.codec) ? raw.codec : base.codec,
     simulcast: typeof raw.simulcast === "boolean" ? raw.simulcast : base.simulcast,
     degradationPreference: ["balanced", "maintain-resolution", "maintain-framerate"]

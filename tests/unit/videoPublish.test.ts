@@ -70,7 +70,7 @@ describe("encoding", () => {
   });
 
   it("clamps the bitrate", () => {
-    expect(topLayerBitrate(3840, 2160, 60)).toBe(2_500_000);
+    expect(topLayerBitrate(3840, 2160, 60)).toBe(4_000_000);
     expect(topLayerBitrate(160, 120, 5)).toBe(100_000);
   });
 
@@ -87,6 +87,12 @@ describe("encoding", () => {
     expect(o.videoCodec).toBe("h264");
     expect(o.videoEncoding?.maxFramerate).toBe(24);
     expect(o.degradationPreference).toBe("maintain-framerate");
+  });
+
+  it("a manual max bitrate overrides auto; 0 means auto", () => {
+    const p = defaultVideoPrefs(IPHONE);
+    expect(videoPublishOptions({ ...p, maxBitrateKbps: 3000 }, "c", IPHONE).videoEncoding?.maxBitrate).toBe(3_000_000);
+    expect(videoPublishOptions(p, "c", IPHONE).videoEncoding?.maxBitrate).toBe(topLayerBitrate(960, 540, 24));
   });
 
   it("capture options pass the frame rate, and deviceId over facingMode", () => {

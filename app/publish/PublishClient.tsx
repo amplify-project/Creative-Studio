@@ -31,6 +31,8 @@ import { Camera, CameraOff, SwitchCamera, Wifi, WifiOff, Loader2 } from "lucide-
 import { runPublishOp } from "../utils/publishQueue";
 import {
   applyMotionHint,
+  BITRATE_CHOICES_KBPS,
+  topLayerBitrate,
   loadExtraCameraPrefs,
   resolveCodec,
   saveExtraCameraPrefs,
@@ -287,11 +289,12 @@ function CameraPage({ room, roomName }: { room: Room; roomName: string }) {
 
   // The codec is negotiated at publish time, so it can only change while the
   // camera is off; the select is disabled while live.
-  const setCodec = (codec: VideoCodecChoice) => {
-    const next = { ...prefs, codec };
+  const updatePrefs = (patch: Partial<VideoPrefs>) => {
+    const next = { ...prefs, ...patch };
     setPrefs(next);
     saveExtraCameraPrefs(next);
   };
+  const setCodec = (codec: VideoCodecChoice) => updatePrefs({ codec });
 
   return (
     <div className="h-viewport flex flex-col overflow-hidden bg-zinc-950 text-white">
@@ -366,7 +369,7 @@ function CameraPage({ room, roomName }: { room: Room; roomName: string }) {
             <SwitchCamera className="h-5 w-5" />
           </button>
         </div>
-        <div className="mt-2 flex items-center justify-center gap-2 text-[11px] text-zinc-600">
+        <div className="mt-2 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[11px] text-zinc-600">
           <span>Microphone off · {facing === "user" ? "Front camera" : "Back camera"} ·</span>
           <label className="flex items-center gap-1">
             Codec
@@ -380,6 +383,24 @@ function CameraPage({ room, roomName }: { room: Room; roomName: string }) {
               <option value="auto">Auto ({resolveCodec("auto").toUpperCase()})</option>
               <option value="vp8">VP8</option>
               <option value="h264">H.264</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-1">
+            Bitrate
+            <select
+              value={prefs.maxBitrateKbps}
+              disabled={live || busy}
+              onChange={(e) => updatePrefs({ maxBitrateKbps: Number(e.target.value) })}
+              title={live ? "Stop the camera to change the bitrate" : undefined}
+              className="rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px] text-zinc-300 disabled:opacity-50"
+            >
+              {BITRATE_CHOICES_KBPS.map((k) => (
+                <option key={k} value={k}>
+                  {k === 0
+                    ? `Auto (${(topLayerBitrate(prefs.width, prefs.height, prefs.frameRate) / 1e6).toFixed(1)}M)`
+                    : `${k / 1000}M`}
+                </option>
+              ))}
             </select>
           </label>
         </div>

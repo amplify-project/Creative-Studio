@@ -132,6 +132,7 @@ export default function MediaControls({
       publish: {
         simulcast: initialVideoPrefs.simulcast,
         codec: initialVideoPrefs.codec,
+        maxBitrateKbps: initialVideoPrefs.maxBitrateKbps,
         degradationPreference: initialVideoPrefs.degradationPreference,
       } as VideoPublishState,
     },
@@ -617,6 +618,7 @@ export default function MediaControls({
     height: capture.height,
     frameRate: capture.frameRate,
     codec: publish.codec,
+    maxBitrateKbps: publish.maxBitrateKbps,
     simulcast: publish.simulcast,
     degradationPreference: publish.degradationPreference,
   });

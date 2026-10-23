@@ -75,16 +75,29 @@ One module decides everything:
 
 | | Capture | Top layer | Extra layers | Codec (auto) |
 |---|---|---|---|---|
-| Desktop | 1280×720 @ 24 | ~2.2 Mbps | 640×360, 320×180 | VP8 |
-| Phone (normal participant) | 960×540 @ 24 | ~1.24 Mbps | 320×180 | H.264 on iOS, VP8 on Android |
-| QR extra camera | 960×720 @ 24 (still 4:3) | ~1.66 Mbps | 320×240 | H.264 on iOS, VP8 on Android |
+| Desktop | 1280×720 @ 24 | ~3.3 Mbps | 640×360, 320×180 | VP8 |
+| Phone (normal participant) | 960×540 @ 24 | ~1.9 Mbps | 320×180 | H.264 on iOS, VP8 on Android |
+| QR extra camera | 960×720 @ 24 (still 4:3) | ~2.5 Mbps | 320×240 | H.264 on iOS, VP8 on Android |
 
 All use `degradationPreference: "maintain-framerate"`.
 
-**Bitrate rule:** `width × height × fps × 0.1` bits/s, clamped to
-100 kbps – 2.5 Mbps. LiveKit's presets sit nearer 0.05–0.08 bpp, which suits
+**Bitrate rule:** `width × height × fps × 0.15` bits/s, clamped to
+100 kbps – 4 Mbps. LiveKit's presets sit nearer 0.05–0.08 bpp, which suits
 talking heads; a handheld camera needs more. Lower layers use the same rule
-at ≤ 20 fps.
+at ≤ 20 fps. It is a ceiling, not a target: on a weak uplink the bandwidth
+estimator still holds the real rate lower.
+
+History: the first cut used 0.1 bpp (phone 540p ≈ 1.24 Mbps). A phone test on
+good wifi (2026-10-23) still looked short of bits when moving; switching
+codec made no visible difference, which points away from CPU and towards
+bitrate. Raised to 0.15 and a manual override added (below). If the next
+test still looks starved, try the override at 3–4 Mbps before touching the
+formula again.
+
+**Manual max bitrate:** `maxBitrateKbps` in the prefs (0 = auto), offered as
+"Max bitrate" in the video settings panel and "Bitrate" on the QR page
+(Auto / 1 / 1.5 / 2 / 3 / 4 / 6 Mbps). Like the codec, it applies at publish
+time, so the QR select is disabled while live.
 
 **Phones send one extra simulcast layer, not two**: every layer is another
 encode on the CPU that is already the bottleneck when the picture moves.
@@ -124,6 +137,12 @@ do not depend on VP8.
   bitrates, layers, prefs sanitizing.
 
 ## Before merging
+
+0. **Bitrate sweep (follow-up of the 2026-10-23 test).** Same phone, same
+   movement, Max bitrate at Auto, 3 and 4 Mbps. If 3–4 Mbps is clearly
+   smoother, raise the auto rule; if none helps, look at the receiving side
+   (`freezeCount`, `framesDropped`, `jitterBufferDelay`, layer switches in
+   `chrome://webrtc-internals`) rather than at the encoder.
 
 1. **Repeat the failing scene.** A phone via QR, panning over foliage, once
    with Auto and once with VP8. Compare fps on the receiving side (the same
