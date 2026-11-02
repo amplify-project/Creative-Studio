@@ -1,5 +1,13 @@
 # Branch `feature/distortion_suggestions` — change documentation
 
+> **Historical record (July 2026).** The distortion model described here
+> (DAC encoder + `distortion_mlp`, multi-label sigmoid, `bw_limit`/`codec`
+> classes, `np.interp` resampling) was replaced on 2026-11-02 by the distortion
+> detector v2, and `ENABLE_DISTORTION_SUGGESTIONS` by `AUDIO_NOTIFY_ISSUES`.
+> For the current analyser read
+> [`server/agents/assistantHost/audioAnalysis/README.md`](../server/agents/assistantHost/audioAnalysis/README.md).
+> The capture-mode suggestion, holds, episode clocks and Block B still apply.
+
 Self-contained record of everything this branch adds on top of `develop`.
 Written to be read (or indexed) without the repo at hand.
 
@@ -492,11 +500,12 @@ the reference bleed into the mic (acoustic loopback).
 | Variable | Default | What it controls |
 |---|---|---|
 | `ENABLE_ONNX_AUDIO_ANALYSIS` | `true` | Whether the analyser is loaded |
-| `ENABLE_DISTORTION_SUGGESTIONS` | `false` | Whether a detected mic issue interrupts its owner |
+| ~~`ENABLE_DISTORTION_SUGGESTIONS`~~ | — | Removed 2026-11-02; see `AUDIO_NOTIFY_ISSUES` |
+| `AUDIO_NOTIFY_ISSUES` | `clipping,low_fidelity,low_level` | Which mic issues interrupt their owner; `""` = shadow mode |
 | `ENABLE_AUDIO_DEBUG` | `false` | Periodic frames/RMS/errors log; also enables `ENABLE_ANALYZER_DEBUG` |
 | `ENABLE_AUDIO_EVENT_LOG` | `false` | Dumps every published `audio/analysis` event |
 | `ANALYZER_SILENCE_RMS_DBFS` | `-55` | Analyser silence gate |
-| `DISTORTION_THRESHOLD` | `0.5` | Per-class sigmoid threshold |
+| `DISTORTION_THRESHOLD` | bundle τ (0.7) | `1 − P(clean)` for a window to count as distorted (was a per-class sigmoid threshold, 0.5, before v2) |
 | `AUDIO_LOW_LEVEL_DBFS` | `-42` | "Mic too quiet" threshold |
 | `AUDIO_MODE_SUGGEST_MIN_SEC` | `5` | Episode length before suggesting a mode |
 | `AUDIO_MODE_RESUGGEST_SEC` | `60` | Re-offer within the same episode |

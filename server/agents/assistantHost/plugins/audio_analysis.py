@@ -1,7 +1,8 @@
 """
 audio_analysis — plugin that subscribes to participant audio tracks,
 runs a YAMNet embedding + content classifier (speech/singing/music/other)
-on 960ms windows with 50% overlap, and publishes results as data events.
+and, on speech, the distortion detector (clipping / bass boost / low quality)
+on consecutive 960ms windows, and publishes results as data events.
 
 Ported from the standalone AudioAnalysisAgent in dataCollection/.
 """
@@ -36,16 +37,24 @@ ENABLE_ONNX_AUDIO_ANALYSIS = os.getenv("ENABLE_ONNX_AUDIO_ANALYSIS", "true").low
 ENABLE_AUDIO_DEBUG = os.getenv("ENABLE_AUDIO_DEBUG", "false").lower() in {"1", "true", "yes", "on"}
 ENABLE_AUDIO_EVENT_LOG = os.getenv("ENABLE_AUDIO_EVENT_LOG", "false").lower() in {"1", "true", "yes", "on"}
 
-# Whether a detected mic problem interrupts its owner with a suggestion.
+# Which detected mic problems interrupt their owner with a suggestion. Detection
+# runs for every issue either way: all of them are published on each
+# audio/analysis event and shown to the host, which is observation without
+# interruption. Only the ones listed here also reach the participant.
 #
-# Off for now: the detection is still being calibrated, and an unreliable
-# personal alert is worse than none. Detection keeps running either way — the
-# issues are published on every audio/analysis event and shown in the host's
-# panel, which is observation without interruption. Flip this back on once the
-# thresholds have been proven against real lessons.
-ENABLE_DISTORTION_SUGGESTIONS = os.getenv(
-    "ENABLE_DISTORTION_SUGGESTIONS", "false"
-).lower() in {"1", "true", "yes", "on"}
+# The default is the issues that are both reliable and fixable by the person:
+#   clipping      vetoed unless the waveform really piles up at the ceiling;
+#                 zero alarms on clean audio, speech or music (2026-11-02).
+#   low_fidelity  speech only; the best recall of the detector's classes, and a
+#                 Bluetooth headset is the one cause nobody notices themselves.
+#   low_level     read off the window RMS, no model involved.
+# bass_boost stays host-only: the weakest class, and a bass voice reads as boomy.
+# Set to "" for shadow mode (host sees everything, nobody is interrupted).
+NOTIFY_ISSUES = frozenset(
+    i.strip()
+    for i in os.getenv("AUDIO_NOTIFY_ISSUES", "clipping,low_fidelity,low_level").split(",")
+    if i.strip()
+)
 AUDIO_DEBUG_INTERVAL_SEC = float(os.getenv("AUDIO_DEBUG_INTERVAL_SEC", "5"))
 ONNX_ERROR_LOG_EVERY_N = max(1, int(os.getenv("ONNX_ERROR_LOG_EVERY_N", "50")))
 
@@ -102,45 +111,26 @@ MODE_RESUGGEST_SEC = float(os.getenv("AUDIO_MODE_RESUGGEST_SEC", "60"))
 # not interrupting someone over one loud note.
 CLIP_SUGGEST_MIN_SEC = float(os.getenv("AUDIO_CLIP_SUGGEST_MIN_SEC", "8"))
 
+ANALYSIS_RATE = 16000
+WINDOW_MS = 960
+
 # The distortion classes worth interrupting a user over, and the copy for each.
-#
-# The distortion model is multi-label: an independent sigmoid per class, so
-# several can be true at once. Each entry here is therefore gated on its OWN
-# probability, deliberately not on the argmax `distortion_type` reported below.
-# That distinction matters: `bw_limit` and `codec` sit near 1.0 in every WebRTC
-# room by construction — the transport really is band-limited and Opus-coded —
-# so an argmax gate lets a structural, unactionable label mask a real clipping
-# detection sitting just behind it. Measured: clipping 0.92 losing to bw_limit
-# 0.99 on audio that was audibly clipped.
-#
-# The other three classes are excluded on purpose, not by omission — and they
-# are filtered out of the published event entirely (see MEANINGFUL_DISTORTIONS),
-# not just left un-suggested, because none of them describes this microphone:
-#
-#   bw_limit    The analyser resamples 48k -> 16k (audio_classifiers.py:10-12,
-#               np.interp with no anti-alias filter), so it never sees above
-#               8 kHz. Every window is band-limited before the mic is involved:
-#               the model is detecting its own pipeline. Pins near 1.0 always.
-#   codec       Every track in the room is Opus. Always true, says nothing.
-#   packet_loss Contradicted in the field on 2026-07-20: the label fired while
-#               WebRTC stats reported no loss at all. Untrusted until that
-#               disagreement is explained.
-#
-# Leaving these in meant `distortion` was permanently True and therefore carried
-# no information at all.
+# The detector (audioAnalysis/distortion/) reports at most one, already smoothed.
+# Copy rule: say what the others hear and what to do, never the jargon.
 ACTIONABLE_DISTORTIONS: dict[str, dict[str, str]] = {
     "clipping": {
-        "title": "Your microphone is clipping",
-        "description": (
-            "Your input level is too high, so the loudest parts are distorting. "
-            "Open the calibration panel to set it."
-        ),
+        "title": "You're too loud for your mic",
+        "description": "Your sound is distorting. Turn your mic input down a little, or move back a bit.",
     },
     "bass_boost": {
-        "title": "Your microphone sounds boomy",
+        "title": "You sound boomy",
+        "description": "You're probably very close to the mic. Move back a little.",
+    },
+    "low_fidelity": {
+        "title": "You sound muffled",
         "description": (
-            "The low end is overpowering, usually from being very close to the mic. "
-            "Move back a little, or angle the mic slightly off to one side."
+            "This usually comes from Bluetooth headphones or a weak connection. "
+            "Try a wired mic or headphones."
         ),
     },
 }
@@ -159,11 +149,8 @@ LOW_LEVEL_DBFS = float(os.getenv("AUDIO_LOW_LEVEL_DBFS", "-42"))
 SUGGESTABLE_ISSUES: dict[str, dict[str, str]] = {
     **ACTIONABLE_DISTORTIONS,
     "low_level": {
-        "title": "Your microphone is very quiet",
-        "description": (
-            "We can hear you, but your level is low enough that you'll be buried in "
-            "the mix. Raise your input gain, or move closer to the mic."
-        ),
+        "title": "We can barely hear you",
+        "description": "Move closer to your mic, or turn its input up.",
     },
 }
 
@@ -229,14 +216,14 @@ class AudioAnalysis(AssistantPlugin):
                     "audio tuning: mode_suggest_min=%.1fs mode_resuggest=%.1fs "
                     "mode_episode_gap=%.1fs content_hold=%d windows "
                     "clip_suggest_min=%.1fs low_level=%.1fdBFS "
-                    "distortion_suggestions=%s",
+                    "notify_issues=%s",
                     MODE_SUGGEST_MIN_SEC,
                     MODE_RESUGGEST_SEC,
                     MODE_EPISODE_GAP_SEC,
                     CONTENT_HOLD_WINDOWS,
                     CLIP_SUGGEST_MIN_SEC,
                     LOW_LEVEL_DBFS,
-                    ENABLE_DISTORTION_SUGGESTIONS,
+                    ",".join(sorted(NOTIFY_ISSUES)) or "none (shadow)",
                 )
             except Exception as e:
                 logger.exception("Failed to import ONNX analyzer module: %s", e)
@@ -370,9 +357,23 @@ class AudioAnalysis(AssistantPlugin):
         )
 
     async def _process_audio(self, track: rtc.Track, track_id: str) -> None:
-        audio_stream = rtc.AudioStream(track)
+        # Ask LiveKit for exactly what the analyser eats: 16 kHz mono, one
+        # 960 ms window per frame. The resampling and downmix then happen in
+        # the Rust SDK (anti-aliased), and this loop wakes once per window
+        # instead of 100 times a second. Measured on the server 2026-11-02:
+        # the models cost 1.3% of a core per track, the default 48 kHz/10 ms
+        # stream ~15%, almost all of it this per-frame Python round trip.
+        audio_stream = rtc.AudioStream(
+            track,
+            sample_rate=ANALYSIS_RATE,
+            num_channels=1,
+            frame_size_ms=int(WINDOW_MS),
+        )
 
         audio_analyzer = None
+        # Fallback only, if the stream ever arrives at another rate. Must be
+        # anti-aliased: aliasing reads as low quality to the detector.
+        resampler = None
         loop = asyncio.get_running_loop()
         analysis_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix=f"audio-analysis-{track_id}"
@@ -412,11 +413,19 @@ class AudioAnalysis(AssistantPlugin):
 
                 if audio_analyzer is None and self.audio_analyzer_cls is not None:
                     try:
-                        audio_analyzer = self.audio_analyzer_cls(src_rate=frame.sample_rate)
+                        audio_analyzer = self.audio_analyzer_cls(src_rate=ANALYSIS_RATE)
+                        if frame.sample_rate != ANALYSIS_RATE:
+                            resampler = rtc.AudioResampler(
+                                frame.sample_rate,
+                                ANALYSIS_RATE,
+                                num_channels=1,
+                                quality=rtc.AudioResamplerQuality.HIGH,
+                            )
                         logger.info(
-                            "[%s] ONNX analyzer initialized (sample_rate=%s, channels=%s)",
+                            "[%s] ONNX analyzer initialized (sample_rate=%s -> %s, channels=%s)",
                             track_id,
                             frame.sample_rate,
+                            ANALYSIS_RATE,
                             frame.num_channels,
                         )
                     except Exception as e:
@@ -426,6 +435,13 @@ class AudioAnalysis(AssistantPlugin):
                 if frame.num_channels > 1:
                     samples = samples.reshape(-1, frame.num_channels).mean(axis=1)
                 samples = samples.astype(np.int16)
+                if resampler is not None:
+                    samples = np.concatenate(
+                        [np.frombuffer(f.data, dtype=np.int16) for f in resampler.push(bytearray(samples.tobytes()))]
+                        or [np.zeros(0, dtype=np.int16)]
+                    )
+                    if samples.size == 0:
+                        continue
 
                 if ENABLE_AUDIO_DEBUG:
                     pcm = samples.astype(np.float32) / 32768.0
@@ -465,10 +481,7 @@ class AudioAnalysis(AssistantPlugin):
                                     else {}
                                 )
 
-                                # Reported for telemetry only. Keep it argmax —
-                                # it answers "what is this mic's dominant
-                                # problem", which is a fair thing to log — but
-                                # never gate a suggestion on it.
+                                # Telemetry only; suggestions are gated per issue below.
                                 distortion_type_candidate = None
                                 distortion_type_confidence = 0.0
                                 if meaningful_labels and label_probs:
@@ -561,13 +574,29 @@ class AudioAnalysis(AssistantPlugin):
                                         if issue_since[issue] is None:
                                             issue_since[issue] = analysis_ts
                                         if (
-                                            ENABLE_DISTORTION_SUGGESTIONS
-                                            and not issue_suggested[issue]
+                                            not issue_suggested[issue]
                                             and analysis_ts - issue_since[issue] >= CLIP_SUGGEST_MIN_SEC
                                         ):
-                                            issue_suggested[issue] = await self._maybe_suggest_distortion(
-                                                track_id, issue
+                                            # Logged whether or not it is sent, so a
+                                            # shadow-mode session still counts how
+                                            # often each participant WOULD have been
+                                            # interrupted: grep "mic_issue_due".
+                                            notify = issue in NOTIFY_ISSUES
+                                            logger.info(
+                                                "[%s] mic_issue_due issue=%s owner=%s content=%s scope=%s notify=%s",
+                                                track_id,
+                                                issue,
+                                                self.track_owner.get(track_id),
+                                                content_type,
+                                                result.distortion_scope or "-",
+                                                notify,
                                             )
+                                            if notify:
+                                                issue_suggested[issue] = await self._maybe_suggest_distortion(
+                                                    track_id, issue
+                                                )
+                                            else:
+                                                issue_suggested[issue] = True
                                     else:
                                         issue_since[issue] = None
                                         issue_suggested[issue] = False

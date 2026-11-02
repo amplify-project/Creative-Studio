@@ -100,10 +100,12 @@ export default function MicCalibrationPanel({
           <div className="space-y-4 px-4 py-4">
             <p className="text-sm text-white/70">
               {issue === "bass_boost"
-                ? "Your mic is picking up a heavy low end — usually the proximity effect from singing or playing very close to it. Move back a hand's width, or angle the mic slightly off to one side, and watch the meter settle."
+                ? "You sound boomy, usually from being very close to the mic. Move back about a hand's width, or angle the mic slightly to one side."
                 : issue === "low_level"
-                  ? "We can hear you, but you're arriving quietly enough to get buried in the mix. Raise the input gain in your system sound settings, or move closer to the mic, until your loudest peaks reach the green band."
-                  : "Sing or play at your loudest. Aim for the peaks to sit in the green band, without touching the red."}
+                  ? "We can hear you, but only just. Turn your mic input up in your system sound settings, or move closer, until your loudest moments reach the green band."
+                  : issue === "low_fidelity"
+                    ? "You sound muffled. That isn't your volume: it usually comes from Bluetooth headphones or a weak connection. Try a wired mic or headphones. The meter below only shows your volume."
+                    : "Sing or play at your loudest. Aim for the peaks to sit in the green band, without touching the red."}
             </p>
             {issue === "low_level" && inputGainHint() && (
               <p className="text-sm text-neutral-400">{inputGainHint()}</p>

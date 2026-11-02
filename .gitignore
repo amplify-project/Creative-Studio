@@ -66,11 +66,11 @@ server/agents/dataCollection/data/
 # only in `.git/info/exclude`, which does not survive a new clone or remote.
 CLAUDE.md
 
-# Third-party ONNX weights, 97 MB, fetched by scripts/fetch-models.sh. They are
-# YAMNet (Google, Apache-2.0) and the Descript Audio Codec encoder (MIT); they
-# are not ours to redistribute inside a GPLv3 source tree, and dac_encoder.onnx
-# alone is over GitHub's 50 MB warning. The two in-house MLPs next to them stay
-# tracked: nothing public can reproduce those.
+# Third-party ONNX weights, fetched by scripts/fetch-models.sh: YAMNet (Google,
+# Apache-2.0) is not ours to redistribute inside a GPLv3 source tree. The
+# in-house models next to it (content_mlp.onnx, distortion/) stay tracked.
+# dac_encoder.onnx is no longer used (replaced by distortion/ in 2026-11) but
+# stays ignored so an old local copy can never be committed.
 /server/agents/assistantHost/audioAnalysis/yamnet_model.onnx
 /server/agents/assistantHost/audioAnalysis/dac_encoder.onnx
 # Beat This! small (JKU Linz, MIT), exported to ONNX by

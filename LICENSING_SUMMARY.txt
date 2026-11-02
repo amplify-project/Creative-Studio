@@ -1,16 +1,19 @@
 AMPLIFY AUDIO MODELS - LICENSING SUMMARY
-Date: 5 October 2026
+Date: 2 November 2026 (distortion detector replaced; first version 5 October 2026)
 
-Scope: the two classifier models and the two pretrained embedding models they
-depend on:
+Scope: the two classifier models and the pretrained embedding model one of
+them depends on:
 
   content_mlp.onnx    - content classifier (singing / speech / instrumental /
                         other), runs on YAMNet embeddings
-  distortion_mlp.onnx - distortion classifier (clipping / bandwidth limit /
-                        bass boost / codec artefacts), runs on DAC encoder
-                        embeddings plus 8 hand-written DSP features
+  distortion/distortion_detector.onnx
+                      - distortion detector (clean / clipping / bass boost /
+                        low fidelity), self-contained: its own encoder plus
+                        DSP measurements. Built by Salsa Sound, 2026-10-30.
   yamnet_model.onnx   - pretrained audio embedding model (Google)
-  dac_encoder.onnx    - pretrained audio encoder (Descript Audio Codec, 16 kHz)
+
+The previous distortion pair (dac_encoder.onnx, the Descript Audio Codec
+encoder, plus distortion_mlp.onnx) is no longer used or distributed.
 
 This is an engineering summary, not legal advice.
 
@@ -19,21 +22,23 @@ This is an engineering summary, not legal advice.
 1. SUMMARY
 ------------------------------------------------------------------------------
 
-- The two pretrained models (YAMNet and the DAC encoder) have permissive
-  licences (Apache 2.0 and MIT). They can be shipped commercially if the
-  licence notices are included.
+- The pretrained model (YAMNet) has a permissive licence (Apache 2.0). It
+  can be shipped commercially if the licence notice is included.
 
-- Most of the training data is public domain, CC0 or CC BY. It can be used
-  commercially with attribution.
+- The distortion detector was trained only on audio licensed for commercial
+  use (public domain, CC0, CC BY). Its encoder was distilled from the DAC
+  encoder (MIT) — trained to reproduce DAC's outputs, DAC used as teacher
+  only — and contains no DAC weights. Its attribution notice is
+  distortion/NOTICE.txt and must ship with it.
 
-- Both classifiers were trained partly on two datasets that are licensed for
-  non-commercial use only: ESC-50 and UrbanSound8K (both CC BY-NC 3.0).
-  These make up about 6% of the content_mlp training data and about 19% of
-  the distortion_mlp training data. It is legally unsettled whether a model
+- content_mlp was trained partly on two datasets that are licensed for
+  non-commercial use only: ESC-50 and UrbanSound8K (both CC BY-NC 3.0),
+  about 6% of its training data. It is legally unsettled whether a model
   trained on non-commercial data is itself restricted to non-commercial use.
-  The cautious position is that the current builds should not be used
-  commercially until they are retrained without these datasets or a
-  commercial licence is obtained.
+  The cautious position is that the current content_mlp build should not be
+  used commercially until it is retrained without these datasets or a
+  commercial licence is obtained. This no longer applies to distortion
+  detection.
 
 
 ------------------------------------------------------------------------------
@@ -50,22 +55,22 @@ YAMNet  (yamnet_model.onnx)
   Note:        Google trained YAMNet on AudioSet, which is drawn from YouTube
                videos. Google released the model under Apache 2.0.
 
-DAC encoder  (dac_encoder.onnx)
-  Source:      Descript Audio Codec v1.0.0, 16 kHz weights
-               (github.com/descriptinc/descript-audio-codec). The encoder
-               plus time mean-pooling, exported to ONNX.
-  Licence:     MIT (Copyright (c) 2023-present, Descript). The repository
-               states that the weights are also released under MIT.
-  Commercial:  Yes
-  Obligations: Include the MIT copyright and permission notice
-  Note:        According to the DAC paper, Descript trained the model on a
-               mix of public datasets, some of which are themselves
-               non-commercial. Descript released the weights under MIT. This
-               raises the same unsettled question as Section 4, one level
-               upstream.
+distortion_detector.onnx  (distortion/)
+  Source:      Trained for this project. Encoder distilled from the
+               Descript Audio Codec 16 kHz encoder (MIT, Copyright (c)
+               2023-present, Descript), which was used as the teacher only.
+  Weights:     Contain no DAC weights.
+  Commercial:  Yes, subject to the training-data attributions in Section 3.
+  Obligations: Ship distortion/NOTICE.txt (DAC MIT notice as teacher, dataset
+               attributions).
+  Note:        DAC itself was trained by Descript on a mix of public datasets,
+               some non-commercial. Distillation reproduces its embedding
+               behaviour, not its weights; whether that inherits anything
+               from DAC's training data is the same unsettled question as
+               Section 4, two levels upstream.
 
-content_mlp.onnx / distortion_mlp.onnx
-  Our own models. Their status depends on the training data in Sections 3
+content_mlp.onnx
+  Our own model. Its status depends on the training data in Sections 3
   and 4.
 
 
@@ -84,33 +89,38 @@ MUSAN                content, distortion      Licensed per file: CC BY,
                                               them counts as creating a
                                               "derivative work" is a minor
                                               grey area.
-VocalSet             content, distortion      CC BY 4.0
+VocalSet             content                  CC BY 4.0
 SingVERSE            content                  CC BY 4.0
 (amphion/SingVERSE)
 Common Voice         distortion               CC0. Downloading requires
 Spontaneous Speech                            agreeing not to try to identify
 (SPS corpus, EN)                              the speakers.
 VoxPopuli            distortion               CC0 (audio)
+LibriSpeech          distortion               CC BY 4.0
+train-clean-100
+CSTR VCTK 0.92       distortion               CC BY 4.0
+
+The distortion detector uses the MUSAN speech subset only (public domain);
+its full list with clip counts is in distortion/NOTICE.txt.
 
 Attribution is required for MUSAN (per-file credits are in the corpus
-LICENSE files), VocalSet and SingVERSE.
+LICENSE files), VocalSet, SingVERSE, LibriSpeech and VCTK.
 
 
 ------------------------------------------------------------------------------
 4. TRAINING DATA - NON-COMMERCIAL ONLY
 ------------------------------------------------------------------------------
 
-Dataset         Licence          content_mlp share   distortion_mlp share
---------------  ---------------  ------------------  --------------------
-ESC-50          CC BY-NC 3.0     ~1.5%               ~5%
+Dataset         Licence          content_mlp share
+--------------  ---------------  ------------------
+ESC-50          CC BY-NC 3.0     ~1.5%
                 (only the ESC-10
                 subset is CC BY)
-UrbanSound8K    CC BY-NC 3.0     ~4.5%               ~14%
+UrbanSound8K    CC BY-NC 3.0     ~4.5%
 
-Both datasets were used in the training and validation splits of both
-models. In both models they supply environmental and urban sounds: the
-"other" class in content_mlp, and clean and distorted examples in
-distortion_mlp.
+Both datasets were used in the training and validation splits of
+content_mlp, where they supply the environmental and urban sounds of the
+"other" class. The distortion detector does not use either.
 
 
 ------------------------------------------------------------------------------
@@ -133,18 +143,20 @@ If the runtime ships ONNX Runtime to run the models, include its MIT licence.
 6. PLANNED NEXT STEPS
 ------------------------------------------------------------------------------
 
-For commercial use, either:
+Distortion detection: done (2026-11-02). The detector was retrained on
+commercially licensed audio only and ships with distortion/NOTICE.txt.
 
-  (a) retrain both classifiers without ESC-50 and UrbanSound8K, replacing
-      them with commercially usable sources such as the CC BY ESC-10
-      subset, the CC0 and CC BY clips of FSD50K, and the existing MUSAN
-      noise; or
+Content classification, for commercial use, either:
+
+  (a) retrain content_mlp without ESC-50 and UrbanSound8K, replacing them
+      with commercially usable sources such as the CC BY ESC-10 subset, the
+      CC0 and CC BY clips of FSD50K, and the existing MUSAN noise; or
 
   (b) obtain commercial licences from the ESC-50 and UrbanSound8K authors.
 
-Ship an attribution/NOTICE file containing: YAMNet (Apache 2.0), DAC (MIT),
-ONNX Runtime (MIT, if bundled), MUSAN per-file credits, VocalSet (CC BY 4.0)
-and SingVERSE (CC BY 4.0).
+Ship an attribution/NOTICE file containing: YAMNet (Apache 2.0), ONNX
+Runtime (MIT, if bundled), MUSAN per-file credits, VocalSet (CC BY 4.0) and
+SingVERSE (CC BY 4.0), alongside distortion/NOTICE.txt.
 
 Open item: the singing training examples in content_mlp came from an
 earlier project that applied reverb and layering augmentation. We are

@@ -1,11 +1,12 @@
-"""The audio analyser's DSP features, and the contract between this code and the
-two classifier models trained for this project (both in git, no download).
+"""The contract between the analyser and its models, and the clipping-only
+decision the analyser applies outside speech.
 
-The contract tests exist because the models are retrained outside this code:
-on 2026-07-22 the distortion model went from 5 classes to 4 and from 9 DSP
-features to 8. If the code and a model disagree, the analyser either crashes on
-the first window or silently reads the wrong class.
+The distortion bundle (audioAnalysis/distortion/) is rebuilt in a separate
+training repo and dropped in as a whole. If the code and a model disagree on
+the class order, the analyser silently reads the wrong class, so that is
+checked here. None of this needs YAMNet (fetched, not in git).
 """
+import json
 from pathlib import Path
 
 import numpy as np
@@ -13,63 +14,99 @@ import onnxruntime as ort
 import pytest
 
 from audioAnalysis import audio_classifiers as ac
+from audioAnalysis.distortion.distortion_detector import DistortionDetector
 
-MODELS = Path(ac.__file__).parent
+BUNDLE = Path(ac.DISTORTION_BUNDLE_DIR)
+CFG = json.loads((BUNDLE / "detector_config.json").read_text())
 SR = ac.TARGET_RATE
 N = int(SR * ac.WINDOW_SEC)
 t = np.arange(N) / SR
 
 
-def features(x):
-    return dict(zip(
-        ["crest", "clip_ratio", "flatness", "hf", "lf", "mid", "centroid", "level"],
-        ac.extract_dsp_features(x.astype(np.float32)),
-    ))
+@pytest.fixture(scope="module")
+def det():
+    return DistortionDetector(str(BUNDLE), hop_s=ac.WINDOW_SEC)
 
 
-# ── contract with the models ─────────────────────────────────────────────────
-
-def test_distortion_model_takes_the_dac_embedding_plus_our_dsp_features():
-    inp = ort.InferenceSession(str(MODELS / "distortion_mlp.onnx")).get_inputs()[0].shape[1]
-    dsp = len(ac.extract_dsp_features(np.zeros(N, dtype=np.float32)))
-    assert inp == 1024 + dsp
+def probs(clean, clip, bass=0.0, lofi=0.0):
+    return np.array([clean, clip, bass, lofi], dtype=np.float32)
 
 
-def test_distortion_model_outputs_one_score_per_class_we_name():
-    out = ort.InferenceSession(str(MODELS / "distortion_mlp.onnx")).get_outputs()[0].shape[1]
-    assert out == len(ac.DISTORTION_CLASSES)
-
+# ── contract with the models ────────────────────────────────────────────────
 
 def test_content_model_outputs_one_score_per_class_we_name():
-    out = ort.InferenceSession(str(MODELS / "content_mlp.onnx")).get_outputs()[0].shape[1]
+    out = ort.InferenceSession(str(ac.CONTENT_MODEL_PATH)).get_outputs()[0].shape[1]
     assert out == len(ac.CONTENT_CLASSES)
 
 
-# ── the features ─────────────────────────────────────────────────────────────
-
-def test_clipping_shows_in_clip_ratio_and_crest_factor():
-    clean = 0.3 * np.sin(2 * np.pi * 440 * t)
-    clipped = np.clip(6 * clean, -1, 1)
-    c, k = features(clean), features(clipped)
-    assert k["clip_ratio"] > 3 * c["clip_ratio"]
-    assert k["crest"] < c["crest"]
+def test_bundle_classes_are_the_ones_the_analyser_names():
+    assert CFG["classes"] == ac.DISTORTION_CLASSES
 
 
-def test_low_hum_is_low_frequency_energy():
-    # Mains hum is what made a silent room read as bass_boost.
-    assert features(0.1 * np.sin(2 * np.pi * 60 * t))["lf"] > 0.9
+def test_bundle_has_a_threshold_for_the_analysers_hop():
+    assert f"{ac.WINDOW_SEC:.2f}" in CFG["tau"]
 
 
-def test_a_high_tone_is_high_frequency_energy():
-    assert features(0.1 * np.sin(2 * np.pi * 6000 * t))["hf"] > 0.9
+def test_bundle_window_is_the_analysers_window():
+    assert CFG["window_samples"] == N and CFG["sample_rate"] == SR
 
 
-def test_level_spans_minus_60_to_0_dbfs():
-    quiet = 10 ** (-70 / 20) * np.sqrt(2) * np.sin(2 * np.pi * 440 * t)
-    loud = np.sin(2 * np.pi * 440 * t)
-    assert features(quiet)["level"] == pytest.approx(0.0)
-    assert features(loud)["level"] > 0.9
+def test_model_returns_what_the_decision_layer_reads(det):
+    out = det.run_model(np.zeros((1, N), dtype=np.float32))
+    assert out["probs"].shape == (1, len(ac.DISTORTION_CLASSES))
+    for key in ("clip_tail", "bandwidth_hz", "rms_dbfs"):
+        assert out[key].shape == (1,)
 
 
-def test_digital_silence_gives_finite_features():
-    assert np.all(np.isfinite(ac.extract_dsp_features(np.zeros(N, dtype=np.float32))))
+# ── the model on a signal whose answer is not in doubt ──────────────────────
+
+def chord(level):
+    return sum(np.sin(2 * np.pi * f * t) for f in (220, 277, 329, 440)) * level / 4
+
+
+def test_hard_clipping_raises_clip_tail(det):
+    clean = det.run_model(chord(0.3)[None, :].astype(np.float32))
+    clipped = det.run_model(np.clip(chord(0.3) * 8, -1, 1)[None, :].astype(np.float32))
+    assert clipped["clip_tail"][0] > clean["clip_tail"][0]
+    assert clipped["clip_tail"][0] >= CFG["clip_tail_min"]
+
+
+# ── ClippingOnlyDecision ────────────────────────────────────────────────────
+
+@pytest.fixture
+def music():
+    return ac.ClippingOnlyDecision(CFG, tau=0.7)
+
+
+def feed(dec, p, tail, n):
+    return [dec.update(p, tail) for _ in range(n)]
+
+
+def test_needs_k_of_n_windows_before_alarming(music):
+    alarms = feed(music, probs(0.1, 0.9), tail=0.5, n=CFG["smooth_k"])
+    assert alarms == [False] * (CFG["smooth_k"] - 1) + [True]
+
+
+def test_clip_tail_veto_holds_in_music(music):
+    # Loud bright music fools the model; the waveform check does not.
+    assert not any(feed(music, probs(0.1, 0.9), tail=CFG["clip_tail_min"] - 0.1, n=10))
+
+
+def test_bass_and_low_fidelity_never_alarm_in_music(music):
+    # Both false-alarmed on clean music in the 2026-11-02 measurement.
+    assert not any(feed(music, probs(0.05, 0.05, bass=0.9), tail=0.5, n=10))
+    assert not any(feed(music, probs(0.05, 0.05, lofi=0.9), tail=0.5, n=10))
+
+
+def test_clipping_must_be_the_top_distorted_class(music):
+    assert not any(feed(music, probs(0.1, 0.4, bass=0.5), tail=0.5, n=10))
+
+
+def test_below_tau_is_clean(music):
+    assert not any(feed(music, probs(0.4, 0.6), tail=0.5, n=10))
+
+
+def test_reset_clears_the_history(music):
+    feed(music, probs(0.1, 0.9), tail=0.5, n=CFG["smooth_k"] - 1)
+    music.reset()
+    assert not music.update(probs(0.1, 0.9), 0.5)

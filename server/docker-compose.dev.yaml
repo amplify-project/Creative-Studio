@@ -115,8 +115,8 @@ services:
       # Diagnosing why clipping never fires on real room audio: this logs
       # avg_rms (a full-scale clipped signal should read ~0.6-0.7 — a low value
       # means something in the capture path is attenuating before the analyser)
-      # and the full per-class distortion_probabilities vector, in
-      # [clipping, bw_limit, bass_boost, codec, packet_loss] order.
+      # and the full distortion_probabilities vector (a softmax), in
+      # [clean, clipping, bass_boost, low_fidelity] order.
       # ENABLE_AUDIO_DEBUG auto-enables ENABLE_ANALYZER_DEBUG in the plugin.
       # Chatty — every window. Turn both off once the puzzle is settled.
       ENABLE_AUDIO_DEBUG: "true"

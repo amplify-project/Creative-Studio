@@ -19,7 +19,7 @@ forbidden=(
   '(^|/)certbot/'                    # Let's Encrypt state, incl. the live private key
   '\.(db|sqlite3?)$'                 # databases
   '(^|/)data1/'                      # the Mongo data directory
-  '(^|/)(yamnet_model|dac_encoder)\.onnx$'  # third-party weights, fetched by scripts/fetch-models.sh
+  '(^|/)(yamnet_model|dac_encoder)\.onnx$'  # third-party weights: YAMNet is fetched; DAC is no longer used
 )
 allowed=(
   '(^|/)\.env\.example$'             # ...except the documented template

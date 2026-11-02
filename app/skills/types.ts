@@ -21,7 +21,7 @@ import type { SharedStateAPI } from "../hooks/useSharedState";
 
 /** Mic problems the calibration panel has copy for. Mirrors
  *  ACTIONABLE_DISTORTIONS in the assistant host's audio_analysis plugin. */
-export type MicIssue = "clipping" | "bass_boost" | "low_level";
+export type MicIssue = "clipping" | "bass_boost" | "low_fidelity" | "low_level";
 
 /** The slice of the app API exposed to skill handlers. Currently the
  *  full SharedStateAPI plus a room reference; expand as needed.

@@ -70,6 +70,12 @@ type SuggestionAPI = {
    *  (known skill, role, personal-target). The bus does not learn who is
    *  offering or why — a local detector is just another source. */
   offer: (msg: SuggestionMessage) => void;
+  /** Ask the bus to stay quiet while something on screen must not be
+   *  interrupted. Returns the release. Claims stack (any one hides the queue)
+   *  and the bus never learns who claimed: the caller declares a moment, the
+   *  bus only knows "someone is holding". Suggestions keep queuing underneath
+   *  and get their full ttl once the last claim is released. */
+  holdQuiet: () => () => void;
 };
 
 const Ctx = createContext<SuggestionAPI | null>(null);
@@ -109,6 +115,10 @@ export function AssistantSuggestionsProvider({
   // Track recently dismissed dedupKeys so the same suggestion can't
   // come back immediately. Map<dedupKey, expiresAt>.
   const cooldown = useRef<Map<string, number>>(new Map());
+  // Outstanding holdQuiet claims. A count, not a flag: two holders (two hook
+  // instances of the same feature, say) must not release each other.
+  const [quietClaims, setQuietClaims] = useState(0);
+  const quiet = micCalIssue !== null || quietClaims > 0;
 
   const removeById = useCallback((id: string) => {
     setSuggestions((q) => q.filter((s) => s.id !== id));
@@ -207,7 +217,7 @@ export function AssistantSuggestionsProvider({
   // Observed in the field — a mode-switch suggestion arrived while the panel
   // was open and expired unseen.
   useEffect(() => {
-    if (suggestions.length === 0 || micCalIssue) return;
+    if (suggestions.length === 0 || quiet) return;
     const interval = setInterval(() => {
       const now = Date.now();
       setSuggestions((q) => {
@@ -223,14 +233,29 @@ export function AssistantSuggestionsProvider({
       });
     }, 250);
     return () => clearInterval(interval);
-  }, [suggestions.length, micCalIssue]);
+  }, [suggestions.length, quiet]);
 
-  // Closing the panel restarts the clock on whatever queued up behind it, so
-  // those suggestions get their full ttl on screen instead of being binned by
-  // the first sweep after the panel goes away.
-  const closeMicCalibration = useCallback(() => {
-    setMicCalIssue(null);
-    setSuggestions((q) => q.map((s) => ({ ...s, createdAt: Date.now() })));
+  // Leaving a quiet stretch restarts the clock on whatever queued up behind
+  // it, so those suggestions get their full ttl on screen instead of being
+  // binned by the first sweep afterwards.
+  const wasQuiet = useRef(false);
+  useEffect(() => {
+    if (wasQuiet.current && !quiet) {
+      setSuggestions((q) => q.map((s) => ({ ...s, createdAt: Date.now() })));
+    }
+    wasQuiet.current = quiet;
+  }, [quiet]);
+
+  const closeMicCalibration = useCallback(() => setMicCalIssue(null), []);
+
+  const holdQuiet = useCallback(() => {
+    setQuietClaims((n) => n + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      setQuietClaims((n) => Math.max(0, n - 1));
+    };
   }, []);
 
   // ── One gate for every offer: assistant on the data topic or local code ──
@@ -337,8 +362,8 @@ export function AssistantSuggestionsProvider({
   // running underneath, so anything still relevant is there afterwards and
   // anything stale has expired on its own ttl.
   const api = useMemo<SuggestionAPI>(
-    () => ({ suggestions: micCalIssue ? [] : suggestions, push, dismiss, accept, offer }),
-    [suggestions, micCalIssue, push, dismiss, accept, offer],
+    () => ({ suggestions: quiet ? [] : suggestions, push, dismiss, accept, offer, holdQuiet }),
+    [suggestions, quiet, push, dismiss, accept, offer, holdQuiet],
   );
 
   return (

@@ -104,7 +104,7 @@ export default function IncomingAudioMeter({
   // level is 0..BARS.length; a sliver at the lowest step so any sound shows.
   const fill = level === 0 ? 0 : [0, 40, 70, 100][level];
   const label = clipping
-    ? "Mic clipping: their input level is too high"
+    ? "Too loud: their sound is distorting"
     : level > 0 ? "Sending sound" : "Mic on, silent";
   return (
     <span

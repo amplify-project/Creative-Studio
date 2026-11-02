@@ -1,0 +1,28 @@
+AMPLIFY DISTORTION DETECTOR — THIRD-PARTY NOTICES
+
+Models: distortion_detector.onnx (app bundle), or student_encoder.onnx +
+distortion_mlp.onnx.
+Trained only on audio licensed for commercial use (CC0, public domain,
+CC BY, CC BY-SA). This is an engineering record, not legal advice.
+
+Pretrained components
+---------------------
+Descript Audio Codec (DAC) 16 kHz — MIT License, Copyright (c) 2023-present
+Descript. Used as the teacher encoder (and dac_encoder.onnx, if shipped).
+ONNX Runtime — MIT License, Copyright (c) Microsoft Corporation (if bundled).
+The encoder in student_encoder.onnx and distortion_detector.onnx is our own model, trained to reproduce DAC encoder
+outputs; it contains no DAC weights.
+
+Training data
+-------------
+Licence texts: CC BY 4.0 https://creativecommons.org/licenses/by/4.0/
+               CC BY 3.0 https://creativecommons.org/licenses/by/3.0/
+               CC0 1.0   https://creativecommons.org/publicdomain/zero/1.0/
+The audio was modified (resampled, cut into 960 ms windows, and degraded
+with synthetic distortions) to make training examples.
+
+- MUSAN speech (Snyder et al., 2015) — public domain  [219 clips]
+- VoxPopuli (Wang et al., 2021) — CC0  [499 clips]
+- Common Voice Spontaneous Speech EN (Mozilla) — CC0  [5915 clips]
+- LibriSpeech train-clean-100 (Panayotov et al., 2015) — CC BY 4.0  [5000 clips]
+- CSTR VCTK Corpus 0.92 (Yamagishi et al., 2019) — CC BY 4.0  [12000 clips]

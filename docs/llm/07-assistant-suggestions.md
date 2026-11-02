@@ -199,6 +199,8 @@ crash if an unknown skill is invoked.
 | Server-side enforcement of the mutation | Same as the rest of the app — `shared-state-agent` checks the participant role on the JSON-patch path. The skill `roles` field is a UX hint, not a security boundary. |
 | One plugin floods the data channel | The `assistant-host` runner gives each plugin a token bucket (burst 3, ~4/min) **and** a per-`dedupKey` cooldown (30 s). All plugins share a global bucket (burst 8, ~6/min) so they can't collude past the cap. |
 | One plugin keeps crashing or keeps hitting limits | Circuit breaker per plugin in the host: 20 issues in 60 s → plugin suspended for 5 minutes. Logged with `OPEN` in the per-minute health line. |
+| A toast interrupts something that must not be interrupted | `holdQuiet()` on the bus: a claim/release that hides the queue and pauses the ttl sweep while held; released suggestions get their full ttl. Claims stack and the bus never learns who holds them. Play2Gether claims it during countdown/recording; the mic calibration panel has the same effect. |
+| Mic alerts nag the participant | Detection runs for every issue and the host sees all of them; only `AUDIO_NOTIFY_ISSUES` (default `clipping,low_fidelity,low_level`) reach the participant. `""` = shadow mode; every due alert is logged as `mic_issue_due`. See `server/agents/assistantHost/audioAnalysis/README.md`. |
 
 ## File map
 

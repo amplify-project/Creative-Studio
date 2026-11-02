@@ -1,7 +1,7 @@
 # Hand-zoom system — technical reference
 
-A Python LiveKit worker detects singer hands in each subscribed video
-track via MediaPipe and broadcasts bounding boxes; clients render the
+A Python LiveKit worker detects singer hands in the video tracks the host
+has enabled zoom on, via MediaPipe and broadcasts bounding boxes; clients render the
 video into a canvas, animating the crop toward the bbox.
 
 User-facing flow:
@@ -64,10 +64,22 @@ Named agents do NOT auto-join rooms — see project tour for dispatch flow.
 
 ### Entrypoint
 
-Connects with `await ctx.connect()`, attaches the room to a `HandZoomAgent`
-instance. Three room event handlers registered:
+Connects with `ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_NONE)`
+and attaches the room to a `HandZoomAgent` instance.
 
-- `track_subscribed` — store the video track in `agent.video_tracks[pub.sid]`.
+**It subscribes to a video track only while zoom is enabled on it.** The SDK
+receives and decodes every subscribed video track whether or not anything
+reads it, so the old default (subscribe to everything) cost the worker ~10%
+of a core per camera in the room, all the time (measured 2026-11-02).
+`enable` adds the track to `agent.wanted` and calls
+`publication.set_subscribed(True)`; processing starts when the track arrives.
+`disable` cancels the task and unsubscribes. Expect a short delay between the
+host's click and the first bbox while the subscription comes up.
+
+Three room event handlers registered:
+
+- `track_subscribed` — store the video track in `agent.video_tracks[pub.sid]`
+  and start `process_video` if the track is wanted.
 - `track_unsubscribed` — cancel any active `process_video` task for that
   track, remove from the dict.
 - `data_received` — decode the data packet as `AgentData`, route to
@@ -76,7 +88,7 @@ instance. Three room event handlers registered:
 Logs to look for in production:
 - `"registered worker"` — worker connected to LiveKit but no dispatch yet.
 - `[zoom-agent] entrypoint START` — got a job for some room.
-- `Video track saved: <sid>` — saw a remote video track.
+- `Video track saved: <sid>` — subscribed to a track the host enabled zoom on.
 - `Enabling video processing for track <sid>` — host enabled zoom for it.
 - `Starting video processing` — `process_video` task is running.
 - `Task cancelled` / `Video processing ended` — clean shutdown.
