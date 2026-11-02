@@ -144,13 +144,18 @@ the app already attaches the session state that is needed.
 
 ## Third-party models
 
-The assistant's audio analysis uses two third-party ONNX models that are not kept in this repository — 97 MB of weights that are not ours to redistribute:
+The assistant's audio analysis uses one third-party ONNX model that is not kept in this repository:
 - YAMNet, Google, Apache-2.0 — content classification embeddings.
-- The encoder half of the Descript Audio Codec, MIT — distortion embeddings.
+
+`./scripts/fetch-models.sh` downloads it (and the P2G beat tracker) and verifies the SHA-256.
+
+The two models on top of it are in the repository: they were trained for this project, they are covered by the licence below, and nothing public reproduces them.
+- `content_mlp.onnx` — singing / speech / instrumental / other, on YAMNet embeddings.
+- `distortion/distortion_detector.onnx` — clipping / bass boost / low quality. Its encoder was distilled from the Descript Audio Codec encoder (MIT) but contains none of its weights, and it was trained only on commercially licensed audio; its attribution notice is `server/agents/assistantHost/audioAnalysis/distortion/NOTICE.txt`.
+
+Do not substitute your own export of YAMNet — see [`server/agents/assistantHost/audioAnalysis/README.md`](server/agents/assistantHost/audioAnalysis/README.md) for why that silently degrades the classifier.
 
 *(For a complete overview of third-party licenses, see [Licensing_summary.txt](LICENSING_SUMMARY.txt))*.
-
-`./scripts/fetch-models.sh` downloads both and verifies their SHA-256. The two small MLPs beside them are in the repository: they were trained for this project, they are covered by the licence below, and nothing public reproduces them. Do not substitute your own export of the third-party pair — see `server/agents/assistantHost/audioAnalysis/README.md` for why that silently degrades the classifiers.
 
 
 ## License

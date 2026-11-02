@@ -16,8 +16,14 @@ but the repo root is still called `portable_amp`.
   rooms as participants. Three agents:
   - `shared-state-agent` — authoritative store of room shared state
     (JSON Patch with optimistic ack).
-  - `zoom-agent` — MediaPipe Hands detection on subscribed video tracks,
-    broadcasts bbox events.
+  - `zoom-agent` — MediaPipe Hands detection on the video tracks the host
+    enabled zoom on (subscribed only while enabled), broadcasts bbox events.
+  - `assistant-host` — plugin runner for the AI assistants; the audio
+    analysis plugin classifies content and mic problems. Audio-only.
+
+  Agents connect with an explicit `auto_subscribe` (audio only, none, or per
+  track): a subscribed video track is decoded even if unread. See
+  `04-gotchas-and-patterns.md`.
   - `pose-gaze-agent` — data collection (gaze / player testing).
 - **`ffmpeg` + `ffprobe`** on the server for audio mixing and reference
   duration probing.

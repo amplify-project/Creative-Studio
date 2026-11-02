@@ -789,6 +789,28 @@ touch device never fires that event, so on a phone it was a permanently
 half-visible control with no way to restore it. `.hover-dim` is gated on
 `@media (hover: hover) and (pointer: fine)`.
 
+## Agents: subscribe only to what you read (2026-11-02)
+
+`await ctx.connect()` with no arguments subscribes the agent to **every
+track in the room**, and the LiveKit SDK receives and **decodes** a
+subscribed video track even if no `VideoStream` is ever opened on it. All
+three agents did this. On the server, one participant turning the camera
+off dropped `assistant_host` from ~16% to ~7% of a core, and `agent_zoom`
+and `shared_state` dropped the same way: each camera was being decoded once
+per agent. Rule:
+
+- Pass `auto_subscribe` explicitly: `AUDIO_ONLY` (assistant), `SUBSCRIBE_NONE`
+  (shared state, zoom).
+- If an agent needs one specific track, subscribe to it on demand with
+  `publication.set_subscribed(True)` and unsubscribe when done (zoom does this
+  on enable/disable).
+- When measuring agent CPU, measure **with cameras on and someone speaking**:
+  silence is dropped before any model runs and Opus DTX sends almost nothing,
+  so a quiet room says nothing about cost.
+- Restarting an agent container drops it from rooms that already exist:
+  everyone has to leave and the room be recreated before it is dispatched
+  again.
+
 ## Open ideas — present but not in plan
 
 - Sample-accurate take-vs-take alignment via clap cross-correlation

@@ -34,9 +34,16 @@ The reasons to move `assistant_host` that actually hold up:
 - `server/agents/assistantHost/assistant_host.py:553` — a standard LiveKit
   worker, `WorkerOptions(..., agent_name=AGENT_IDENTITY)`, i.e. **explicit
   dispatch per session**, connecting *outbound* to `LIVEKIT_URL`.
-- Audio arrives over the SFU: `rtc.AudioStream(track)` in
-  `plugins/audio_analysis.py:423`. **There is no audio transport to invent** —
-  the SFU already delivers it as Opus (~32 kbps/track).
+- Audio arrives over the SFU: `rtc.AudioStream(track, sample_rate=16000,
+  num_channels=1, frame_size_ms=960)` in `plugins/audio_analysis.py`.
+  **There is no audio transport to invent** — the SFU already delivers it as
+  Opus (~32 kbps/track). The agent connects audio-only; it never receives
+  video.
+- Measured on the server 2026-11-02 after the distortion detector v2: the
+  models cost ~1.3% of a core per audio track. Most of what the agent used to
+  cost was decoding every camera it had auto-subscribed to, fixed by
+  `AutoSubscribe.AUDIO_ONLY`. Re-check the case for offloading against those
+  numbers before acting on it.
 - `audioAnalysis/` holds three ONNX models, tracked in git, about 31 MB total
   (`yamnet` 16 MB, `distortion/distortion_detector` 12,6 MB, `content_mlp`
   2,6 MB).
