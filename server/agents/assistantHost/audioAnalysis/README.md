@@ -134,6 +134,22 @@ a shadow session still counts how often each person would have been
 interrupted. During a Play2Gether countdown/recording the client holds all
 suggestions (`holdQuiet` on the suggestion bus) and shows them after the take.
 
+## On or off per session
+
+The assistant is **on by default** for every session (`SessionDomain.assistantEnabled`;
+absent reads as on, only an explicit `false` turns it off). A host can switch it
+off or on in two places, and both act on the running room immediately — the
+agent leaves or joins now, not on the next join:
+
+- the session editor (`app/spaces/[spaceId]/sessions`), per session;
+- the **On/Off** switch in the host's Audio tab, during the session.
+
+Both go through `app/dbbackend/assistantAgent.ts` (`applyAssistantToRoom`:
+dispatch on, or delete the dispatch and remove the agent participant), and
+`/api/token` reads the same setting on every join. The API is
+`GET/POST /api/sessions/[id]/assistant`, hosts of the session or its space
+only.
+
 ## Updating the models
 
 **The distortion detector.** Rebuild the bundle in the training repo, then

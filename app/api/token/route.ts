@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { AccessToken, AgentDispatchClient, RoomServiceClient } from "livekit-server-sdk";
-import { prisma } from "../../dbbackend/prisma";
+import { ASSISTANT_AGENT, assistantEnabledForSession } from "../../dbbackend/assistantAgent";
 
 const API_KEY = process.env.LIVEKIT_API_KEY!;
 const API_SECRET = process.env.LIVEKIT_API_SECRET!;
@@ -11,28 +11,10 @@ const LIVEKIT_URL = process.env.LIVEKIT_URL ?? process.env.NEXT_PUBLIC_LIVEKIT_U
 const SHARED_STATE_AGENT = "shared-state-agent";
 const ROOM_AGENTS = [SHARED_STATE_AGENT, "zoom-agent", "pose-gaze-agent"];
 
-// Dispatched only when the session opted in. Kept out of ROOM_AGENTS rather
-// than filtered out of it so the default is "not dispatched" — forgetting to
-// handle a case leaves the expensive agent off, not on.
-const ASSISTANT_AGENT = "assistant-host";
-
-/** Room names are SessionDomain ids (see app/host/page.tsx, which reads the
- *  `sessionId` query param). Anything that isn't a real session — the "test"
- *  fallback, an ad-hoc room — has no row and therefore no opt-in. */
-async function assistantEnabledForRoom(roomName: string): Promise<boolean> {
-  try {
-    const session = await prisma.sessionDomain.findUnique({
-      where: { id: roomName },
-      select: { assistantEnabled: true },
-    });
-    return session?.assistantEnabled === true;
-  } catch {
-    // Malformed ObjectId, or the DB is unreachable. Both mean we cannot show
-    // the session opted in, and the safe answer for a resource-hungry agent
-    // is no.
-    return false;
-  }
-}
+// The assistant (ASSISTANT_AGENT) is dispatched per session: on unless the
+// session turned it off. Room names are SessionDomain ids (see
+// app/host/page.tsx); a room with no session row gets no assistant. See
+// app/dbbackend/assistantAgent.ts.
 
 // Maps app roles to the roles parse_role() expects in the Python agent.
 // Hosts need "teacher" so their state/patch requests are authorized.
@@ -138,7 +120,7 @@ async function dispatchAgentsToRoom(roomName: string): Promise<void> {
     // If listing fails, proceed with dispatch anyway.
   }
 
-  const wanted = (await assistantEnabledForRoom(roomName))
+  const wanted = (await assistantEnabledForSession(roomName))
     ? [...ROOM_AGENTS, ASSISTANT_AGENT]
     : ROOM_AGENTS;
 

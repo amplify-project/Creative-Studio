@@ -102,17 +102,14 @@ model SessionDomain {
   startAt   DateTime?
   endAt     DateTime?
   createdAt DateTime @default(now())
-  // Whether the assistant-host agent is dispatched to this session's room.
-  // Opt-in because it is the expensive path: three ONNX inferences per 960ms
-  // window per audio track, so its cost scales with active participants.
-  // Read server-side in /api/token — never from a client parameter, since
-  // every participant requests a token and could otherwise turn it on or off
-  // for the whole room.
-  // Optional rather than `Boolean @default(false)`: this is MongoDB, and the
-  // documents that already exist have no such field at all. A required field
-  // would make every one of them fail to deserialise until backfilled, so
-  // absent simply reads as "not enabled" — which is the wanted default anyway.
-  assistantEnabled Boolean? @default(false)
+  // Whether the assistant-host agent (audio analysis) is dispatched to this
+  // session's room. ON by default since 2026-11: the distortion detector v2
+  // and audio-only subscription brought it to ~1-2% of a core per audio track.
+  // Read server-side (app/dbbackend/assistantAgent.ts) — never from a client
+  // parameter, since every participant requests a token.
+  // Optional because this is MongoDB and older documents lack the field:
+  // absent reads as ON, only an explicit false turns it off.
+  assistantEnabled Boolean? @default(true)
 
   space     Space    @relation(fields: [spaceId], references: [id])
   roles     SessionRole[]

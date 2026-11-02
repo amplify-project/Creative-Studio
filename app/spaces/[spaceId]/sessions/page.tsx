@@ -4,6 +4,7 @@ import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { prisma } from "../../../dbbackend/prisma";
 import { requireHostOfSpace } from "../../../dbbackend/rbac";
+import { applyAssistantToRoom } from "../../../dbbackend/assistantAgent";
 import jwt from "jsonwebtoken";
 import CopyLinkButton from "../../../../components/ui/CopyLinkButton";
 import LocalDateTimeInput from "../../../../components/ui/LocalDateTimeInput";
@@ -87,14 +88,9 @@ async function deleteSession(spaceId: string, sessionId: string) {
 /**
  * Toggle the assistant on an existing session.
  *
- * There was no way to change this after creation, and it is not a create-time
- * property in any meaningful sense: `/api/token` reads `assistantEnabled` fresh
- * on every token request and decides which agents to dispatch from it, so the
- * value is consulted continuously for the life of the session.
- *
- * It therefore takes effect on the NEXT join. It does not reach into a room
- * that is already running: an agent already dispatched stays, and one not yet
- * dispatched arrives with the next participant to ask for a token.
+ * `/api/token` reads `assistantEnabled` on every token request, and the change
+ * is also applied to a room that is already running: the agent leaves or joins
+ * now (applyAssistantToRoom), the same as the switch in the host's Audio tab.
  */
 async function setAssistantEnabled(
   spaceId: string,
@@ -107,6 +103,11 @@ async function setAssistantEnabled(
     where: { id: sessionId },
     data: { assistantEnabled: formData.get("assistantEnabled") === "on" },
   });
+  try {
+    await applyAssistantToRoom(sessionId, formData.get("assistantEnabled") === "on");
+  } catch (e) {
+    console.warn(`[assistant] could not apply to room "${sessionId}" now:`, e);
+  }
   revalidatePath(`/spaces/${spaceId}/sessions`);
 }
 
@@ -274,8 +275,8 @@ export default async function SessionsPage({
         <div className="flex flex-col">
           <label className="text-sm">AI assistant</label>
           <label className="flex items-center gap-2 text-sm h-[38px]">
-            <input type="checkbox" name="assistantEnabled" value="on" />
-            <span title="Analyses participant audio to suggest capture-mode and mic fixes. Costs CPU proportional to active participants.">
+            <input type="checkbox" name="assistantEnabled" value="on" defaultChecked />
+            <span title="Analyses participant audio to suggest capture-mode and mic fixes. Can also be switched off from the host's Audio tab during the session.">
               Enable
             </span>
           </label>
@@ -334,9 +335,9 @@ export default async function SessionsPage({
                   type="checkbox"
                   name="assistantEnabled"
                   value="on"
-                  defaultChecked={s.assistantEnabled ?? false}
+                  defaultChecked={s.assistantEnabled !== false}
                 />
-                <span title="Analyses participant audio to suggest capture-mode and mic fixes. Costs CPU proportional to active participants.">
+                <span title="Analyses participant audio to suggest capture-mode and mic fixes. Can also be switched off from the host's Audio tab during the session.">
                   AI assistant
                 </span>
               </label>
