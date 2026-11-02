@@ -12,8 +12,8 @@
  * (content class, level, detected issues) rather than only the problems the
  * agent decided were worth interrupting someone about: the analyser's
  * thresholds are still being calibrated, and you cannot calibrate what you
- * cannot see. The suggestion path is gated off server-side meanwhile
- * (ENABLE_DISTORTION_SUGGESTIONS).
+ * cannot see. Which issues also reach the participant as a suggestion is
+ * decided server-side (AUDIO_NOTIFY_ISSUES).
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -40,10 +40,19 @@ type AudioAnalysis = {
 
 type Reading = AudioAnalysis & { receivedAt: number };
 
+// Plain words for the host: what they would hear, not the analyser's class.
 const ISSUE_LABEL: Record<string, string> = {
-  clipping: "Clipping",
+  clipping: "Too loud",
   bass_boost: "Boomy",
+  low_fidelity: "Muffled",
   low_level: "Too quiet",
+};
+
+const ISSUE_HINT: Record<string, string> = {
+  clipping: "Their sound is distorting",
+  bass_boost: "Probably too close to the mic",
+  low_fidelity: "Bluetooth or a weak connection",
+  low_level: "Hard to hear in the mix",
 };
 
 const CONTENT_LABEL: Record<string, string> = {
@@ -197,6 +206,7 @@ export default function AudioAnalysisTab() {
                     issues.map((i) => (
                       <span
                         key={i}
+                        title={ISSUE_HINT[i]}
                         className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-200"
                       >
                         <AlertTriangle size={9} />

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRoomContext } from "@livekit/components-react";
 import { Track, type Room } from "livekit-client";
 import { useSharedStateContext } from "./useSharedState";
+import { useSuggestionsOrNull } from "./useAssistantSuggestions";
 import { holdRemoteAudio, outputNode, routeElement, unrouteElement } from "../utils/outputBus";
 import { p2gLog, withNet, median, type ClockStats } from "../lib/p2gTelemetry";
 import { SYNC_BPM, SYNC_JITTER_MS, syncBeatMs, syncRoundDurationSec } from "../lib/p2gSync";
@@ -1037,6 +1038,16 @@ export function usePlay2GetherSession(
   }, [p2g.status, p2g.clapAt, offset]);
 
   const phase = useMemo(() => derivePhase(p2g, now, offset), [p2g, now, offset]);
+
+  // No toasts while a take is counting in or recording: whatever the assistant
+  // has to say (a clipping mic, say) waits in the queue and shows once the
+  // take is over, when the person can actually act on it.
+  const holdSuggestions = useSuggestionsOrNull()?.holdQuiet;
+  const takeInProgress = phase === "countdown" || phase === "recording";
+  useEffect(() => {
+    if (!takeInProgress || !holdSuggestions) return;
+    return holdSuggestions();
+  }, [takeInProgress, holdSuggestions]);
 
   const localIdentity = room?.localParticipant.identity ?? null;
 

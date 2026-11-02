@@ -45,9 +45,9 @@ export const SKILLS: SkillDefinition[] = [
       },
       issue: {
         type: "enum",
-        values: ["clipping", "bass_boost", "low_level"] as const,
+        values: ["clipping", "bass_boost", "low_fidelity", "low_level"] as const,
         description:
-          "What the analyser detected on their mic: 'clipping' (input level too high), 'bass_boost' (too close to the mic, low end overpowering) or 'low_level' (audible but too quiet)",
+          "What the analyser detected on their mic: 'clipping' (input level too high), 'bass_boost' (too close to the mic, low end overpowering), 'low_fidelity' (muffled or phone-like: weak connection, Bluetooth headset or built-in device mic) or 'low_level' (audible but too quiet)",
       },
     },
     // Both: the host sings too, so the host's own mic can clip.

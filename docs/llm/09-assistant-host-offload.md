@@ -37,9 +37,9 @@ The reasons to move `assistant_host` that actually hold up:
 - Audio arrives over the SFU: `rtc.AudioStream(track)` in
   `plugins/audio_analysis.py:423`. **There is no audio transport to invent** —
   the SFU already delivers it as Opus (~32 kbps/track).
-- `audioAnalysis/` holds four ONNX models, tracked in git, 102 MB total
-  (`dac_encoder` 83 MB, `yamnet` 16 MB, `content_mlp` 2,6 MB,
-  `distortion_mlp` 1,2 MB).
+- `audioAnalysis/` holds three ONNX models, tracked in git, about 31 MB total
+  (`yamnet` 16 MB, `distortion/distortion_detector` 12,6 MB, `content_mlp`
+  2,6 MB).
 - `assistantHost/Dockerfile` already does `COPY . .`, so **the image is
   self-contained**. The `volumes: ./agents/assistantHost:/app` in
   `server/docker-compose.yaml:100` is dev convenience that shadows it.
