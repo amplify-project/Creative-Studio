@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 from dotenv import load_dotenv
 from livekit import rtc
-from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli, WorkerPermissions
+from livekit.agents import Agent, AgentSession, AutoSubscribe, JobContext, WorkerOptions, cli, WorkerPermissions
 from livekit.agents import RoomInputOptions, RoomOutputOptions
 import mediapipe as mp
 from agent_data import AgentData
@@ -54,11 +54,32 @@ class HandZoomAgent(Agent):
         super().__init__(instructions="Detect hands and send bbox zoom info.")
         self.room: rtc.Room | None = None
         self.active_tasks: dict[str, asyncio.Task] = {}
-        self.video_tracks: dict[str, rtc.VideoStream] = {}
-        self.audio_tracks: dict[str, rtc.AudioStream] = {}
-       
+        self.video_tracks: dict[str, rtc.Track] = {}
+        # Tracks the host has zoom enabled on. Only these are subscribed: a
+        # subscribed video track is decoded by the SDK whether or not anything
+        # reads it, so subscribing to every camera cost ~10% of a core each.
+        self.wanted: set[str] = set()
+
     def attach_room(self, room: rtc.Room):
         self.room = room
+
+    def _publication(self, track_id: str) -> rtc.RemoteTrackPublication | None:
+        for p in self.room.remote_participants.values():
+            pub = p.track_publications.get(track_id)
+            if pub is not None:
+                return pub
+        return None
+
+    def _set_subscribed(self, track_id: str, on: bool) -> None:
+        pub = self._publication(track_id)
+        if pub is not None:
+            pub.set_subscribed(on)
+
+    def start_if_wanted(self, track_id: str) -> None:
+        track = self.video_tracks.get(track_id)
+        if track_id in self.wanted and track and track_id not in self.active_tasks:
+            logger.info(f"Enabling video processing for track {track_id}")
+            self.active_tasks[track_id] = asyncio.create_task(self.process_video(track, track_id))
 
     async def send_hand_info(self, bbox, track_id: str):
         # Bbox values are in normalized [0, 1] coords so the client can apply
@@ -200,12 +221,12 @@ class HandZoomAgent(Agent):
             if agent_data.payload["command"] == "enable":
                 track_id = agent_data.payload["track_id"]
 
-                if track_id not in self.active_tasks:
-                    logger.info(f"Enabling video processing for track {track_id}")
-                    track = self.video_tracks.get(track_id)
-                    if track:
-                        task = asyncio.create_task(self.process_video(track, track_id))
-                        self.active_tasks[track_id] = task
+                self.wanted.add(track_id)
+                if track_id in self.video_tracks:
+                    self.start_if_wanted(track_id)
+                else:
+                    # Processing starts from track_subscribed once it arrives.
+                    self._set_subscribed(track_id, True)
 
                 # 🔥 Emitir evento al cliente en formato estándar
                 await self.room.local_participant.publish_data(
@@ -216,9 +237,11 @@ class HandZoomAgent(Agent):
             elif agent_data.payload["command"] == "disable":
                 track_id = agent_data.payload["track_id"]
                 logger.info(f"Disabling processing for track {track_id}")
+                self.wanted.discard(track_id)
                 if track_id in self.active_tasks:
                     self.active_tasks[track_id].cancel()
                     del self.active_tasks[track_id]
+                self._set_subscribed(track_id, False)
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
@@ -237,7 +260,9 @@ class HandZoomAgent(Agent):
 # ---------- Entrypoint ----------
 async def entrypoint(ctx: JobContext):
     logger.info(f"[zoom-agent] entrypoint START — job={ctx.job.id if ctx.job else 'no-job'} room={ctx.room.name if ctx.room else '?'}")
-    await ctx.connect()
+    # Nothing by default: video is subscribed per track while zoom is enabled
+    # on it (see HandZoomAgent.wanted). Audio is never needed.
+    await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_NONE)
     room = ctx.room
     logger.info(f"[zoom-agent] connected to room '{room.name}' — waiting for tracks + data")
 
@@ -257,6 +282,7 @@ async def entrypoint(ctx: JobContext):
         if track.kind == rtc.TrackKind.KIND_VIDEO:
             agent.video_tracks[pub.sid] = track
             logger.info(f"Video track saved: {pub.sid}")
+            agent.start_if_wanted(pub.sid)
 
     @room.on("track_unsubscribed")
     def _on_track_unsubscribed(track: rtc.Track, pub: rtc.RemoteTrackPublication, p: rtc.RemoteParticipant):
@@ -265,7 +291,7 @@ async def entrypoint(ctx: JobContext):
                     logger.info(f"Removing task {agent.active_tasks}")
                     agent.active_tasks[pub.sid].cancel()
                     del agent.active_tasks[pub.sid]
-            del agent.video_tracks[pub.sid]
+            agent.video_tracks.pop(pub.sid, None)
             logger.info(f"Video track removed: {pub.sid}")
 
     @room.on("data_received")

@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Callable
 from dotenv import load_dotenv
 from livekit import rtc
 from livekit.agents import (
-    Agent, AgentSession, JobContext, WorkerOptions, cli, WorkerPermissions,
+    Agent, AgentSession, AutoSubscribe, JobContext, WorkerOptions, cli, WorkerPermissions,
     RoomInputOptions, RoomOutputOptions
 )
 
@@ -295,7 +295,10 @@ class CommandBus:
 
 # --------------- Entrypoint ---------------
 async def entrypoint(ctx: JobContext):
-    await ctx.connect()
+    # Data only. A subscribed track is received and decoded by the SDK even if
+    # nothing reads it: with the default every camera in the room cost this
+    # agent CPU for nothing (measured 2026-11-02).
+    await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_NONE)
     room = ctx.room
 
     session = AgentSession()

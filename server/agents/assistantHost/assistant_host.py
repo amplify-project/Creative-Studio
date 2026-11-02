@@ -49,6 +49,7 @@ from livekit import rtc
 from livekit.agents import (
     Agent,
     AgentSession,
+    AutoSubscribe,
     JobContext,
     RoomInputOptions,
     RoomOutputOptions,
@@ -473,7 +474,10 @@ class _Stub(Agent):
 
 
 async def entrypoint(ctx: JobContext):
-    await ctx.connect()
+    # Audio only: no plugin reads video, and a subscribed video track is
+    # still received and DECODED by the SDK. With the default (subscribe all)
+    # every camera in the room cost the agent ~10-15% of a core.
+    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
     room = ctx.room
     session = AgentSession()
     await session.start(
