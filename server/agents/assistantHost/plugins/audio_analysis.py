@@ -112,6 +112,7 @@ MODE_RESUGGEST_SEC = float(os.getenv("AUDIO_MODE_RESUGGEST_SEC", "60"))
 CLIP_SUGGEST_MIN_SEC = float(os.getenv("AUDIO_CLIP_SUGGEST_MIN_SEC", "8"))
 
 ANALYSIS_RATE = 16000
+WINDOW_MS = 960
 
 # The distortion classes worth interrupting a user over, and the copy for each.
 # The detector (audioAnalysis/distortion/) reports at most one, already smoothed.
@@ -356,10 +357,22 @@ class AudioAnalysis(AssistantPlugin):
         )
 
     async def _process_audio(self, track: rtc.Track, track_id: str) -> None:
-        audio_stream = rtc.AudioStream(track)
+        # Ask LiveKit for exactly what the analyser eats: 16 kHz mono, one
+        # 960 ms window per frame. The resampling and downmix then happen in
+        # the Rust SDK (anti-aliased), and this loop wakes once per window
+        # instead of 100 times a second. Measured on the server 2026-11-02:
+        # the models cost 1.3% of a core per track, the default 48 kHz/10 ms
+        # stream ~15%, almost all of it this per-frame Python round trip.
+        audio_stream = rtc.AudioStream(
+            track,
+            sample_rate=ANALYSIS_RATE,
+            num_channels=1,
+            frame_size_ms=int(WINDOW_MS),
+        )
 
         audio_analyzer = None
-        # Anti-aliased (soxr): aliasing reads as low quality to the detector.
+        # Fallback only, if the stream ever arrives at another rate. Must be
+        # anti-aliased: aliasing reads as low quality to the detector.
         resampler = None
         loop = asyncio.get_running_loop()
         analysis_executor = concurrent.futures.ThreadPoolExecutor(
