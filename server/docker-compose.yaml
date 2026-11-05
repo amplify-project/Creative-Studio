@@ -119,6 +119,28 @@ services:
       - livekit
       - shared_state
     network_mode: host
+  # Opt-in (`docker compose --profile engagement up -d`): only useful when the
+  # Physiological-Signals Redis is reachable from this host. Usually the agent
+  # runs on the concert PC next to that Redis instead; a LiveKit worker
+  # connects outbound, so it works behind NAT. See the agent's README.
+  engagement_bridge:
+    profiles: ["engagement"]
+    build:
+      context: ./agents/engagementBridge
+    image: agent_engagement_bridge:latest
+    container_name: agent_engagement_bridge
+    restart: unless-stopped
+    environment:
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:?must match server/server.yaml}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:?must match server/server.yaml}"
+      LIVEKIT_URL: "ws://localhost:7880"
+      # The Physiological-Signals Redis, e.g. redis://host:6379/0. Not `:?`:
+      # compose interpolates profiled services too, so a required variable
+      # here would break every deploy that doesn't use this profile.
+      REDIS_URL: "${ENGAGEMENT_REDIS_URL:-}"
+    depends_on:
+      - livekit
+    network_mode: host
   mongo:
     build:
       context: ./mongo
@@ -167,6 +189,8 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
+      # Dispatch engagement-bridge-agent to rooms (server/agents/engagementBridge).
+      ENGAGEMENT_AGENT_ENABLED: ${ENGAGEMENT_AGENT_ENABLED:-false}
     volumes:
       - ./data/bugs:/app/server/data1/bugs
     depends_on:
