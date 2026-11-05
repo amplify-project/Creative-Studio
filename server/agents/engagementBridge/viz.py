@@ -3,7 +3,7 @@ Engagement visualisation published as a regular, visible room participant.
 
 The bridge agent itself is hidden (and its identity contains "agent", which
 the UI filters out). This opens a second connection with identity
-`engagement-viz` / name "Engagement" that publishes a camera-like video track,
+`engagementviz` / name "Engagement" that publishes a camera-like video track,
 so the host sees it in the participant list and adds it to the stage with the
 existing "add to stage" flow. No frontend changes are needed.
 
@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger("engagement_viz")
 
-VIZ_IDENTITY = os.getenv("ENGAGEMENT_VIZ_IDENTITY", "engagement-viz")
+VIZ_IDENTITY = os.getenv("ENGAGEMENT_VIZ_IDENTITY", "engagementviz")
 VIZ_NAME = os.getenv("ENGAGEMENT_VIZ_NAME", "Engagement")
 VIZ_FPS = float(os.getenv("ENGAGEMENT_VIZ_FPS", "5"))
 W, H = 1280, 720

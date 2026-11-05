@@ -25,12 +25,12 @@ to the stage. `--room` is the Creative Studio session id (the LiveKit room
 name). Needs `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (env or
 `.env.local`). Pulseras show as "Sin asignar · <serial>" since there is no
 host binding in this mode. Don't combine it with the dispatched agent in the
-same room: both publish as `engagement-viz`.
+same room: both publish as `engagementviz`.
 
 ## Stage visualisation (`viz.py`)
 
 Besides the data messages, the agent opens a second, **visible** connection
-as `engagement-viz` ("Engagement") that publishes a 1280×720 video track at
+as `engagementviz` ("Engagement") that publishes a 1280×720 video track at
 `ENGAGEMENT_VIZ_FPS` (default 5). The host sees it in the participant list
 like anyone else and adds it to the stage with the usual button; no frontend
 changes. (The UI hides identities containing `agent`, hence the separate
@@ -116,7 +116,7 @@ everyone receives the crowd average. `all`: everyone receives everything.
 | `ENGAGEMENT_SIMULATE` | `false` | `true` = fake data for 4 pulseras generated in-process, **no Redis** (test the room side) |
 | `ENGAGEMENT_VIZ` | `true` | publish the stage visualisation |
 | `ENGAGEMENT_VIZ_FPS` | `5` | |
-| `ENGAGEMENT_VIZ_IDENTITY` / `_NAME` | `engagement-viz` / `Engagement` | must not contain `agent` |
+| `ENGAGEMENT_VIZ_IDENTITY` / `_NAME` | `engagementviz` / `Engagement` | no `agent` (UI hides it) and no `-` (UI reads `<base>-…` as a secondary camera) |
 | `ENGAGEMENT_VIZ_FONT_DIR` | `/usr/share/fonts/truetype/dejavu` | |
 
 Dispatch is **opt-in**: set `ENGAGEMENT_AGENT_ENABLED=true` for the Next.js

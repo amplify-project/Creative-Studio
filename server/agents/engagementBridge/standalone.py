@@ -14,7 +14,7 @@ changes, nothing in the cloud.
 Needs LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET (env or .env.local).
 Pulseras show as "Sin asignar · <serial>": there is no host binding here.
 Don't run it while the cloud engagement-bridge-agent is enabled for the same
-room: both would publish as "engagement-viz".
+room: both would publish as "engagementviz".
 """
 
 import argparse
