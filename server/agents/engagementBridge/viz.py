@@ -85,7 +85,11 @@ class VizPublisher:
     def _token(self) -> str:
         grants = api.VideoGrants(
             room_join=True, room=self.room_name,
-            can_publish=True, can_subscribe=False, can_publish_data=False,
+            # can_subscribe must stay True: with it off the server never negotiates
+            # the subscriber PeerConnection, the SDK waits for it ("wait_pc_connection
+            # timed out") and no media flows, though the participant shows up.
+            # Nothing is received anyway: the connection uses auto_subscribe=False.
+            can_publish=True, can_subscribe=True, can_publish_data=False,
         )
         return (
             api.AccessToken(os.environ["LIVEKIT_API_KEY"], os.environ["LIVEKIT_API_SECRET"])
