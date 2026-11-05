@@ -130,6 +130,9 @@ services:
     image: agent_engagement_bridge:latest
     container_name: agent_engagement_bridge
     restart: unless-stopped
+    # Like shared_state: mounted so the agent's .env.local (if any) is read.
+    volumes:
+      - ./agents/engagementBridge:/app
     environment:
       LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:?must match server/server.yaml}"
       LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:?must match server/server.yaml}"
