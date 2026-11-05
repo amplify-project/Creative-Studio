@@ -9,7 +9,16 @@ const LIVEKIT_URL = process.env.LIVEKIT_URL ?? process.env.NEXT_PUBLIC_LIVEKIT_U
 // Agents that must run in every room. Names must match `agent_name=` in the
 // corresponding Python worker (zoom_agent.py, agent.py, …).
 const SHARED_STATE_AGENT = "shared-state-agent";
-const ROOM_AGENTS = [SHARED_STATE_AGENT, "zoom-agent", "pose-gaze-agent"];
+// The engagement bridge relays a single Redis hub (Physiological-Signals),
+// so it is opt-in: dispatching it to every room would show the same people's
+// data in all of them. See server/agents/engagementBridge/README.md.
+const ENGAGEMENT_AGENT = "engagement-bridge-agent";
+const ROOM_AGENTS = [
+  SHARED_STATE_AGENT,
+  "zoom-agent",
+  "pose-gaze-agent",
+  ...(process.env.ENGAGEMENT_AGENT_ENABLED === "true" ? [ENGAGEMENT_AGENT] : []),
+];
 
 // The assistant (ASSISTANT_AGENT) is dispatched per session: on unless the
 // session turned it off. Room names are SessionDomain ids (see

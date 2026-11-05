@@ -1,0 +1,8 @@
+# Same LiveKit pins as the other agents (shareState, zoom_agent)
+livekit==1.0.12
+livekit-api==1.0.5
+livekit-protocol==1.0.4
+livekit-agents==1.2.8
+redis>=5.0,<7
+pillow>=10.1  # visualisation frames (bundled font needs >=10.1)
+python-dotenv
