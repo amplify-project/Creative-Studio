@@ -72,8 +72,11 @@ def arousal_label(a: Optional[float]) -> Optional[str]:
 
 
 class VizPublisher:
-    def __init__(self, room: rtc.Room, state) -> None:
+    def __init__(self, room: Optional[rtc.Room], state, room_name: Optional[str] = None) -> None:
+        # room: the bridge agent's connection (names come from it). None when run
+        # standalone (standalone.py): then this connection is the only one.
         self.main_room = room
+        self.room_name = room_name or room.name
         self.state = state
         self.room = rtc.Room()
         self.history: deque = deque()
@@ -81,7 +84,7 @@ class VizPublisher:
 
     def _token(self) -> str:
         grants = api.VideoGrants(
-            room_join=True, room=self.main_room.name,
+            room_join=True, room=self.room_name,
             can_publish=True, can_subscribe=False, can_publish_data=False,
         )
         return (
@@ -102,7 +105,7 @@ class VizPublisher:
             await self.room.local_participant.publish_track(
                 track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_CAMERA)
             )
-            logger.info("visualisation published as %s in room %s", VIZ_IDENTITY, self.main_room.name)
+            logger.info("visualisation published as %s in room %s", VIZ_IDENTITY, self.room_name)
 
             interval = 1.0 / VIZ_FPS
             while True:
@@ -124,7 +127,7 @@ class VizPublisher:
     def _name(self, entry) -> str:
         ident = entry.get("identity")
         if ident:
-            p = self.main_room.remote_participants.get(ident)
+            p = (self.main_room or self.room).remote_participants.get(ident)
             return (p.name if p and p.name else ident)[:22]
         return f"Sin asignar · {entry['serial'][-4:]}"
 

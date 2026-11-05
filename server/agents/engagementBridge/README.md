@@ -9,6 +9,24 @@ Physiological-Signals ──► Redis ──► engagement-bridge-agent ──�
  (vision + EmotiBit)                  serial → identity            host / participant UI
 ```
 
+## Simplest: standalone, only the stage visualisation
+
+If all you want is the "Engagement" tile on the stage, run `standalone.py` on
+the concert PC. No agent dispatch, no web app changes, nothing in the cloud:
+
+```bash
+pip install -r requirements.txt
+python standalone.py --room <room-name>              # reads redis://localhost:6379/0
+python standalone.py --room <room-name> --simulate   # fake data, no Redis
+```
+
+It joins the room as "Engagement" and publishes the video; the host adds it
+to the stage. `--room` is the Creative Studio session id (the LiveKit room
+name). Needs `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (env or
+`.env.local`). Pulseras show as "Sin asignar · <serial>" since there is no
+host binding in this mode. Don't combine it with the dispatched agent in the
+same room: both publish as `engagement-viz`.
+
 ## Stage visualisation (`viz.py`)
 
 Besides the data messages, the agent opens a second, **visible** connection
