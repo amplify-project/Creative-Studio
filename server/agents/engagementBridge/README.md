@@ -1,5 +1,7 @@
 # engagement-bridge-agent
 
+> **Experimental, branch `feature/pilot2`, not merged.** Overview, verification and traps: [docs/llm/17-engagement-bridge.md](../../../docs/llm/17-engagement-bridge.md).
+
 Relays the **Physiological-Signals** Redis feed (audience engagement + EmotiBit
 physiology) into a Creative Studio LiveKit room as data messages on topic
 `engagement`. Data only, like `shared-state-agent`: it subscribes to no tracks.
