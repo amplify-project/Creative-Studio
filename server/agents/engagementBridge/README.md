@@ -95,6 +95,7 @@ everyone receives the crowd average. `all`: everyone receives everything.
 | `PUBLISH_INTERVAL_S` | `1.0` | |
 | `STALE_AFTER_S` | `10` | entry flagged `stale` |
 | `DROP_AFTER_S` | `60` | entry removed |
+| `ENGAGEMENT_SIMULATE` | `false` | `true` = fake data for 4 pulseras generated in-process, **no Redis** (test the room side) |
 | `ENGAGEMENT_VIZ` | `true` | publish the stage visualisation |
 | `ENGAGEMENT_VIZ_FPS` | `5` | |
 | `ENGAGEMENT_VIZ_IDENTITY` / `_NAME` | `engagement-viz` / `Engagement` | must not contain `agent` |

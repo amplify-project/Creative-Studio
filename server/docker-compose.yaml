@@ -141,6 +141,8 @@ services:
       # compose interpolates profiled services too, so a required variable
       # here would break every deploy that doesn't use this profile.
       REDIS_URL: "${ENGAGEMENT_REDIS_URL:-}"
+      # true = fake data generated in-process, no Redis (for testing the room side).
+      ENGAGEMENT_SIMULATE: "${ENGAGEMENT_SIMULATE:-false}"
     depends_on:
       - livekit
     network_mode: host
