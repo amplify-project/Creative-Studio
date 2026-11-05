@@ -39,16 +39,25 @@ TRACK = (63, 63, 70)
 
 
 FONT_DIR = os.getenv("ENGAGEMENT_VIZ_FONT_DIR", "/usr/share/fonts/truetype/dejavu")
+_WIN_FONTS = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+# (regular, bold) candidates with accents and ñ, first found wins. Pillow's
+# bundled default font has neither. The concert PC is usually Windows.
+FONT_CANDIDATES = [
+    (os.path.join(FONT_DIR, "DejaVuSans.ttf"), os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf")),  # Linux / Docker
+    (os.path.join(_WIN_FONTS, "segoeui.ttf"), os.path.join(_WIN_FONTS, "segoeuib.ttf")),        # Windows
+    (os.path.join(_WIN_FONTS, "arial.ttf"), os.path.join(_WIN_FONTS, "arialbd.ttf")),           # Windows
+    ("/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"),  # macOS
+]
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
-    # DejaVu (fonts-dejavu-core in the Dockerfile) covers accents and ñ;
-    # Pillow's bundled default font does not.
-    try:
-        return ImageFont.truetype(os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"), size)
-    except OSError:
-        logger.warning("DejaVu font not found in %s; accented characters will not render", FONT_DIR)
-        return ImageFont.load_default(size=size)
+    for regular, heavy in FONT_CANDIDATES:
+        try:
+            return ImageFont.truetype(heavy if bold else regular, size)
+        except OSError:
+            continue
+    logger.warning("no TrueType font with accents found; accented characters will not render")
+    return ImageFont.load_default(size=size)
 
 
 F_TITLE, F_BIG, F_ROW, F_SMALL = _font(27, True), _font(92, True), _font(28), _font(20)
