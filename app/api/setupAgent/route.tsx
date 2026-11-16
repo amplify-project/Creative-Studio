@@ -3,7 +3,13 @@ import { NextResponse } from "next/server";
 import { AgentDispatchClient } from "livekit-server-sdk";
 
 const LIVEKIT_URL = "http://127.0.0.1:7880"
-const AGENTS = ["zoom-agent", "shared-state-agent","pose-gaze-agent"];
+// Keep in step with ROOM_AGENTS in app/api/token/route.ts (engagement is opt-in there too).
+const AGENTS = [
+  "zoom-agent",
+  "shared-state-agent",
+  "pose-gaze-agent",
+  ...(process.env.ENGAGEMENT_AGENT_ENABLED === "true" ? ["engagement-bridge-agent"] : []),
+];
 
 export async function POST(req: Request) {
   try {

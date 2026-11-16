@@ -285,6 +285,17 @@ class EngagementBridge:
                 except Exception:
                     pass
 
+    async def simulate_loop(self) -> None:
+        """ENGAGEMENT_SIMULATE=true: generate fake data in-process instead of reading Redis."""
+        import simulate
+
+        logger.info("SIMULATION mode: generating fake data for %s (no Redis)", [d[0] for d in simulate.DEVICES])
+        t0 = time.time()
+        while True:
+            for channel, payload in simulate.messages(time.time() - t0):
+                self.state.ingest(channel, payload)
+            await asyncio.sleep(1)
+
     async def publish_loop(self) -> None:
         while True:
             await asyncio.sleep(PUBLISH_INTERVAL_S)
@@ -329,7 +340,9 @@ async def entrypoint(ctx: JobContext):
 
         asyncio.create_task(_handle())
 
-    tasks = [asyncio.create_task(bridge.redis_loop()), asyncio.create_task(bridge.publish_loop())]
+    simulate_mode = os.getenv("ENGAGEMENT_SIMULATE", "false").lower() == "true"
+    source = bridge.simulate_loop() if simulate_mode else bridge.redis_loop()
+    tasks = [asyncio.create_task(source), asyncio.create_task(bridge.publish_loop())]
 
     viz: Optional[VizPublisher] = None
     if os.getenv("ENGAGEMENT_VIZ", "true").lower() == "true":

@@ -1,5 +1,7 @@
 # engagement-bridge-agent
 
+> **Experimental, branch `feature/pilot2`, not merged.** Overview, verification and traps: [docs/llm/17-engagement-bridge.md](../../../docs/llm/17-engagement-bridge.md).
+
 Relays the **Physiological-Signals** Redis feed (audience engagement + EmotiBit
 physiology) into a Creative Studio LiveKit room as data messages on topic
 `engagement`. Data only, like `shared-state-agent`: it subscribes to no tracks.
@@ -9,10 +11,28 @@ Physiological-Signals ──► Redis ──► engagement-bridge-agent ──�
  (vision + EmotiBit)                  serial → identity            host / participant UI
 ```
 
+## Simplest: standalone, only the stage visualisation
+
+If all you want is the "Engagement" tile on the stage, run `standalone.py` on
+the concert PC. No agent dispatch, no web app changes, nothing in the cloud:
+
+```bash
+pip install -r requirements.txt
+python standalone.py --room <room-name>              # reads redis://localhost:6379/0
+python standalone.py --room <room-name> --simulate   # fake data, no Redis
+```
+
+It joins the room as "Engagement" and publishes the video; the host adds it
+to the stage. `--room` is the Creative Studio session id (the LiveKit room
+name). Needs `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (env or
+`.env.local`). Pulseras show as "Sin asignar · <serial>" since there is no
+host binding in this mode. Don't combine it with the dispatched agent in the
+same room: both publish as `engagementviz`.
+
 ## Stage visualisation (`viz.py`)
 
 Besides the data messages, the agent opens a second, **visible** connection
-as `engagement-viz` ("Engagement") that publishes a 1280×720 video track at
+as `engagementviz` ("Engagement") that publishes a 1280×720 video track at
 `ENGAGEMENT_VIZ_FPS` (default 5). The host sees it in the participant list
 like anyone else and adds it to the stage with the usual button; no frontend
 changes. (The UI hides identities containing `agent`, hence the separate
@@ -95,9 +115,10 @@ everyone receives the crowd average. `all`: everyone receives everything.
 | `PUBLISH_INTERVAL_S` | `1.0` | |
 | `STALE_AFTER_S` | `10` | entry flagged `stale` |
 | `DROP_AFTER_S` | `60` | entry removed |
+| `ENGAGEMENT_SIMULATE` | `false` | `true` = fake data for 4 pulseras generated in-process, **no Redis** (test the room side) |
 | `ENGAGEMENT_VIZ` | `true` | publish the stage visualisation |
 | `ENGAGEMENT_VIZ_FPS` | `5` | |
-| `ENGAGEMENT_VIZ_IDENTITY` / `_NAME` | `engagement-viz` / `Engagement` | must not contain `agent` |
+| `ENGAGEMENT_VIZ_IDENTITY` / `_NAME` | `engagementviz` / `Engagement` | no `agent` (UI hides it) and no `-` (UI reads `<base>-…` as a secondary camera) |
 | `ENGAGEMENT_VIZ_FONT_DIR` | `/usr/share/fonts/truetype/dejavu` | |
 
 Dispatch is **opt-in**: set `ENGAGEMENT_AGENT_ENABLED=true` for the Next.js

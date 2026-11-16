@@ -3,7 +3,7 @@ Engagement visualisation published as a regular, visible room participant.
 
 The bridge agent itself is hidden (and its identity contains "agent", which
 the UI filters out). This opens a second connection with identity
-`engagement-viz` / name "Engagement" that publishes a camera-like video track,
+`engagementviz` / name "Engagement" that publishes a camera-like video track,
 so the host sees it in the participant list and adds it to the stage with the
 existing "add to stage" flow. No frontend changes are needed.
 
@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger("engagement_viz")
 
-VIZ_IDENTITY = os.getenv("ENGAGEMENT_VIZ_IDENTITY", "engagement-viz")
+VIZ_IDENTITY = os.getenv("ENGAGEMENT_VIZ_IDENTITY", "engagementviz")
 VIZ_NAME = os.getenv("ENGAGEMENT_VIZ_NAME", "Engagement")
 VIZ_FPS = float(os.getenv("ENGAGEMENT_VIZ_FPS", "5"))
 W, H = 1280, 720
@@ -39,16 +39,25 @@ TRACK = (63, 63, 70)
 
 
 FONT_DIR = os.getenv("ENGAGEMENT_VIZ_FONT_DIR", "/usr/share/fonts/truetype/dejavu")
+_WIN_FONTS = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+# (regular, bold) candidates with accents and ñ, first found wins. Pillow's
+# bundled default font has neither. The concert PC is usually Windows.
+FONT_CANDIDATES = [
+    (os.path.join(FONT_DIR, "DejaVuSans.ttf"), os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf")),  # Linux / Docker
+    (os.path.join(_WIN_FONTS, "segoeui.ttf"), os.path.join(_WIN_FONTS, "segoeuib.ttf")),        # Windows
+    (os.path.join(_WIN_FONTS, "arial.ttf"), os.path.join(_WIN_FONTS, "arialbd.ttf")),           # Windows
+    ("/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"),  # macOS
+]
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
-    # DejaVu (fonts-dejavu-core in the Dockerfile) covers accents and ñ;
-    # Pillow's bundled default font does not.
-    try:
-        return ImageFont.truetype(os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"), size)
-    except OSError:
-        logger.warning("DejaVu font not found in %s; accented characters will not render", FONT_DIR)
-        return ImageFont.load_default(size=size)
+    for regular, heavy in FONT_CANDIDATES:
+        try:
+            return ImageFont.truetype(heavy if bold else regular, size)
+        except OSError:
+            continue
+    logger.warning("no TrueType font with accents found; accented characters will not render")
+    return ImageFont.load_default(size=size)
 
 
 F_TITLE, F_BIG, F_ROW, F_SMALL = _font(27, True), _font(92, True), _font(28), _font(20)
@@ -72,8 +81,11 @@ def arousal_label(a: Optional[float]) -> Optional[str]:
 
 
 class VizPublisher:
-    def __init__(self, room: rtc.Room, state) -> None:
+    def __init__(self, room: Optional[rtc.Room], state, room_name: Optional[str] = None) -> None:
+        # room: the bridge agent's connection (names come from it). None when run
+        # standalone (standalone.py): then this connection is the only one.
         self.main_room = room
+        self.room_name = room_name or room.name
         self.state = state
         self.room = rtc.Room()
         self.history: deque = deque()
@@ -81,8 +93,12 @@ class VizPublisher:
 
     def _token(self) -> str:
         grants = api.VideoGrants(
-            room_join=True, room=self.main_room.name,
-            can_publish=True, can_subscribe=False, can_publish_data=False,
+            room_join=True, room=self.room_name,
+            # can_subscribe must stay True: with it off the server never negotiates
+            # the subscriber PeerConnection, the SDK waits for it ("wait_pc_connection
+            # timed out") and no media flows, though the participant shows up.
+            # Nothing is received anyway: the connection uses auto_subscribe=False.
+            can_publish=True, can_subscribe=True, can_publish_data=False,
         )
         return (
             api.AccessToken(os.environ["LIVEKIT_API_KEY"], os.environ["LIVEKIT_API_SECRET"])
@@ -102,7 +118,7 @@ class VizPublisher:
             await self.room.local_participant.publish_track(
                 track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_CAMERA)
             )
-            logger.info("visualisation published as %s in room %s", VIZ_IDENTITY, self.main_room.name)
+            logger.info("visualisation published as %s in room %s", VIZ_IDENTITY, self.room_name)
 
             interval = 1.0 / VIZ_FPS
             while True:
@@ -124,7 +140,7 @@ class VizPublisher:
     def _name(self, entry) -> str:
         ident = entry.get("identity")
         if ident:
-            p = self.main_room.remote_participants.get(ident)
+            p = (self.main_room or self.room).remote_participants.get(ident)
             return (p.name if p and p.name else ident)[:22]
         return f"Sin asignar · {entry['serial'][-4:]}"
 

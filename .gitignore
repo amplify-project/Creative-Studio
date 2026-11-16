@@ -3,6 +3,7 @@
 # would have no effect: gitignore does not apply to files already in the index.
 server/.env
 /server/agents/.venv
+/server/agents/*/.venv
 /server/agents/dataCollection/__pycache__
 **/__pycache__/
 *.pyc
