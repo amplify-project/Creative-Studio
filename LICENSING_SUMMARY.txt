@@ -1,5 +1,6 @@
 AMPLIFY AUDIO MODELS - LICENSING SUMMARY
-Date: 2 November 2026 (distortion detector replaced; first version 5 October 2026)
+Date: 16 November 2026 (Play2Gether section added; distortion detector replaced
+2 November 2026; first version 5 October 2026)
 
 Scope: the two classifier models and the pretrained embedding model one of
 them depends on:
@@ -11,6 +12,9 @@ them depends on:
                         low fidelity), self-contained: its own encoder plus
                         DSP measurements. Built by Salsa Sound, 2026-10-30.
   yamnet_model.onnx   - pretrained audio embedding model (Google)
+
+Section 7 covers the third-party pieces of Play2Gether (P2G): the Beat This!
+beat tracker, ffmpeg, numpy and ONNX Runtime.
 
 The previous distortion pair (dac_encoder.onnx, the Descript Audio Codec
 encoder, plus distortion_mlp.onnx) is no longer used or distributed.
@@ -40,6 +44,10 @@ This is an engineering summary, not legal advice.
   commercial licence is obtained. This no longer applies to distortion
   detection.
 
+- Play2Gether (P2G) ships one more pretrained model, Beat This! (MIT code and
+  checkpoint licence, JKU Linz). Its training data licences have NOT been
+  checked yet (Section 7). ffmpeg in the web app image is LGPL or GPL
+  depending on the build; it runs as a separate process.
 
 ------------------------------------------------------------------------------
 2. SHIPPED MODEL FILES
@@ -161,3 +169,51 @@ SingVERSE (CC BY 4.0), alongside distortion/NOTICE.txt.
 Open item: the singing training examples in content_mlp came from an
 earlier project that applied reverb and layering augmentation. We are
 checking whether that augmentation introduced any other third-party audio.
+
+
+------------------------------------------------------------------------------
+7. PLAY2GETHER (P2G) - THIRD-PARTY COMPONENTS
+------------------------------------------------------------------------------
+
+P2G records takes over a host's reference track, aligns them and mixes them
+(docs/play2gether.md). It adds no models trained for this project. Files live
+in /tmp/play2gether/<session> and are not stored in MongoDB.
+
+Beat This!  (scripts/models/beat_this_small0.onnx)
+  Source:      F. Foscarin, J. Schlüter, G. Widmer, "Beat this! Accurate beat
+               tracking without DBN postprocessing", ISMIR 2024
+               (github.com/CPJKU/beat_this), "small0" checkpoint, exported to
+               ONNX by scripts/export-beat-this-onnx.py.
+  Licence:     MIT, Copyright (c) 2024 Institute of Computational Perception,
+               JKU Linz.
+  Use:         scripts/p2g_beat_grid.py, beats of the reference only.
+  Not in git:  fetched by scripts/fetch-models.sh (sha256 checked) from this
+               project's GitHub release "models-v1", so we do redistribute the
+               converted file there.
+  Obligations: Include the MIT licence text and a notice that the model was
+               converted to ONNX.
+  OPEN ITEM:   The licence of the TRAINING DATA behind the checkpoint has not
+               been checked. Beat tracking datasets mix licences and some may
+               be non-commercial. Same unsettled question as Section 4. Check
+               the Beat This! paper and repository before commercial use.
+
+ffmpeg  (apk add ffmpeg in the web app Dockerfile, node:24.12-alpine)
+  Use:         Decoding and mixing in P2G, and decoding in
+               p2g_dtw_align.py and p2g_beat_grid.py.
+  Licence:     LGPL or GPL depending on the build (Alpine's package; exact
+               licence to be confirmed from the package metadata).
+  Linking:     Always run as a separate process (subprocess, not linked).
+               Compatible with the project's GPLv3. It is redistributed as part
+               of the Docker image, so its licence notice must be kept.
+
+numpy  (py3-numpy, Alpine)                       BSD-3-Clause
+ONNX Runtime  (py3-onnxruntime, Alpine)          MIT
+  Use:         p2g_dtw_align.py needs numpy and ffmpeg only (no model, no
+               ONNX Runtime). p2g_beat_grid.py needs numpy, ONNX Runtime and
+               ffmpeg.
+  Obligations: Keep their licence notices in the image.
+
+Users' audio
+  The reference track and the takes are content supplied by the host and the
+  participants. Copyright in a reference track (for example a commercial song)
+  is outside this document; the terms of use should say who is responsible.
